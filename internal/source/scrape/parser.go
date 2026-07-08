@@ -164,7 +164,7 @@ func histComponent(name string, types map[string]string) (base, comp string, ok 
 }
 
 func accumulateHist(hist map[string]*histAccum, base, comp string, attrs model.Labels, v float64, ts uint64) {
-	noLe := labelsWithoutLe(attrs)
+	noLe := attrs.Filter(func(name string) bool { return name != "le" })
 	key := base + "\x00" + model.CanonicalKey(noLe)
 	h := hist[key]
 	if h == nil {
@@ -175,7 +175,7 @@ func accumulateHist(hist map[string]*histAccum, base, comp string, attrs model.L
 	switch comp {
 	case "bucket":
 		le := math.Inf(1)
-		if s, ok := labelGet(attrs, "le"); ok {
+		if s, ok := attrs.Get("le"); ok {
 			if parsed, err := strconv.ParseFloat(s, 64); err == nil {
 				le = parsed
 			}
@@ -265,23 +265,4 @@ func unescapeLabelValue(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
-}
-
-func labelsWithoutLe(attrs model.Labels) model.Labels {
-	out := make(model.Labels, 0, len(attrs))
-	for _, l := range attrs {
-		if l.Name != "le" {
-			out = append(out, l)
-		}
-	}
-	return out
-}
-
-func labelGet(attrs model.Labels, name string) (string, bool) {
-	for _, l := range attrs {
-		if l.Name == name {
-			return l.Value, true
-		}
-	}
-	return "", false
 }

@@ -19,8 +19,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -232,13 +233,5 @@ func (t *httpTransport) close() error { return nil }
 
 // sortedKeys returns map keys in deterministic order (stable header emission).
 func sortedKeys(m map[string]string) []string {
-	if len(m) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }

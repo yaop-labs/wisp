@@ -52,6 +52,28 @@ type Label struct {
 // Labels is an unordered set of labels; canonicalization happens at export.
 type Labels []Label
 
+// Get returns the value of the first label named name, if present.
+func (ls Labels) Get(name string) (string, bool) {
+	for _, l := range ls {
+		if l.Name == name {
+			return l.Value, true
+		}
+	}
+	return "", false
+}
+
+// Filter returns the labels whose names satisfy keep, as a new slice (keep is
+// evaluated once per label).
+func (ls Labels) Filter(keep func(name string) bool) Labels {
+	out := make(Labels, 0, len(ls))
+	for _, l := range ls {
+		if keep(l.Name) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
 // ExpHistogram is a base-2 exponential histogram payload, mirroring OTLP's
 // ExponentialHistogramDataPoint. wisp produces these (including from classic
 // Prometheus histograms) because amber's histogram engine is built around them.

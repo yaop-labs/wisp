@@ -3,7 +3,10 @@
 // never be logged - only their presence or key names.
 package redact
 
-import "sort"
+import (
+	"maps"
+	"slices"
+)
 
 // Value masks a secret for logging: any non-empty value renders as "***".
 func Value(s string) string {
@@ -16,13 +19,5 @@ func Value(s string) string {
 // Keys returns the (sorted) key names of a header/secret map without any values,
 // so logs can show what is configured without leaking the secrets themselves.
 func Keys(m map[string]string) []string {
-	if len(m) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }

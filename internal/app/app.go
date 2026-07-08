@@ -11,7 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/yaop-labs/wisp/internal/config"
@@ -331,13 +331,8 @@ func buildResource(cfg config.ResourceConfig, logger *slog.Logger) model.Labels 
 			logger.Warn("could not resolve host.name", "err", err)
 		}
 	}
-	keys := make([]string, 0, len(attrs))
-	for k := range attrs {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	labels := make(model.Labels, 0, len(keys))
-	for _, k := range keys {
+	labels := make(model.Labels, 0, len(attrs))
+	for _, k := range slices.Sorted(maps.Keys(attrs)) {
 		labels = append(labels, model.Label{Name: k, Value: attrs[k]})
 	}
 	return labels

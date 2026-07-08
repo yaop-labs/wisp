@@ -114,9 +114,9 @@ func (p *Processor) apply(s *model.Series) bool {
 			}
 			setLabel(s, target, repl)
 		case "labeldrop":
-			s.Attrs = filterLabels(s.Attrs, func(name string) bool { return !r.re.MatchString(name) })
+			s.Attrs = s.Attrs.Filter(func(name string) bool { return !r.re.MatchString(name) })
 		case "labelkeep":
-			s.Attrs = filterLabels(s.Attrs, func(name string) bool { return r.re.MatchString(name) })
+			s.Attrs = s.Attrs.Filter(func(name string) bool { return r.re.MatchString(name) })
 		}
 	}
 	return true
@@ -141,15 +141,11 @@ func getLabel(s *model.Series, name string) string {
 	if name == nameLabel {
 		return s.Name
 	}
-	for _, l := range s.Attrs {
-		if l.Name == name {
-			return l.Value
-		}
+	if v, ok := s.Attrs.Get(name); ok {
+		return v
 	}
-	for _, l := range s.Resource {
-		if l.Name == name {
-			return l.Value
-		}
+	if v, ok := s.Resource.Get(name); ok {
+		return v
 	}
 	return ""
 }
@@ -178,15 +174,5 @@ func removeLabel(s *model.Series, name string) {
 	if name == nameLabel {
 		return
 	}
-	s.Attrs = filterLabels(s.Attrs, func(n string) bool { return n != name })
-}
-
-func filterLabels(labels model.Labels, keep func(string) bool) model.Labels {
-	out := make(model.Labels, 0, len(labels))
-	for _, l := range labels {
-		if keep(l.Name) {
-			out = append(out, l)
-		}
-	}
-	return out
+	s.Attrs = s.Attrs.Filter(func(n string) bool { return n != name })
 }
