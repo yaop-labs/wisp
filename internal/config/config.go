@@ -248,6 +248,9 @@ func (c *Config) Validate() error {
 	if c.Exporter.OTLP.Endpoint == "" {
 		return fmt.Errorf("exporter.otlp.endpoint is required")
 	}
+	if o := c.Sources.OTLP; o != nil && o.GRPC == "" && o.HTTP == "" {
+		return fmt.Errorf("sources.otlp: at least one of grpc or http address is required")
+	}
 	if _, ok := c.Resource.Attributes["service.name"]; !ok {
 		return fmt.Errorf("resource.attributes.service.name is required (see the wisp/coral/amber metric contract)")
 	}

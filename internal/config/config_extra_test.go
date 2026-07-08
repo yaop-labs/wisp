@@ -53,6 +53,10 @@ sources: {host: {interval: 15s}}
 exporter: {otlp: {endpoint: "x:4317"}}
 resource: {attributes: {service.name: wisp}}
 processors: [{max_series_per_target: 10}]`, "type is required"},
+		{"otlp source without address", `
+sources: {otlp: {}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, "grpc or http"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
