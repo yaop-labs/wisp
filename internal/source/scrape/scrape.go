@@ -270,10 +270,11 @@ func (s *Source) scrapeOne(ctx context.Context, tg Target, emit func(context.Con
 		s.logger.Warn("scrape failed", "job", tg.Job, "instance", tg.Instance, "err", err)
 		return
 	}
-	resource := model.Labels{
-		{Name: "service.name", Value: tg.Job},
-		{Name: "service.instance.id", Value: tg.Instance},
-	}
+	resource := make(model.Labels, 0, 2+len(tg.Extra))
+	resource = append(resource,
+		model.Label{Name: "service.name", Value: tg.Job},
+		model.Label{Name: "service.instance.id", Value: tg.Instance},
+	)
 	resource = append(resource, tg.Extra...)
 	for i := range series {
 		series[i].Resource = resource

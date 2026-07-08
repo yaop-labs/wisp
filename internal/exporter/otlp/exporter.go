@@ -81,7 +81,7 @@ func New(cfg Config, logger *slog.Logger) (*Exporter, error) {
 	case "", "grpc":
 		tr, err = newGRPCTransport(cfg.Endpoint, cfg.TLS, cfg.Headers)
 	case "http":
-		tr, err = newHTTPTransport(cfg.Endpoint, cfg.TLS, cfg.Headers)
+		tr = newHTTPTransport(cfg.Endpoint, cfg.TLS, cfg.Headers)
 	default:
 		return nil, fmt.Errorf("otlp exporter: unknown protocol %q (use grpc or http)", cfg.Protocol)
 	}
@@ -176,7 +176,7 @@ type httpTransport struct {
 	headers map[string]string
 }
 
-func newHTTPTransport(endpoint string, tlsConf *tls.Config, headers map[string]string) (transport, error) {
+func newHTTPTransport(endpoint string, tlsConf *tls.Config, headers map[string]string) transport {
 	url := strings.TrimRight(endpoint, "/")
 	if !strings.HasSuffix(url, "/v1/metrics") {
 		url += "/v1/metrics"
@@ -186,7 +186,7 @@ func newHTTPTransport(endpoint string, tlsConf *tls.Config, headers map[string]s
 		client.Transport = &http.Transport{TLSClientConfig: tlsConf}
 	}
 	// Timeout is enforced per-request via the context; leave the client open.
-	return &httpTransport{url: url, client: client, headers: headers}, nil
+	return &httpTransport{url: url, client: client, headers: headers}
 }
 
 func (t *httpTransport) send(ctx context.Context, req *colmetricspb.ExportMetricsServiceRequest) error {
