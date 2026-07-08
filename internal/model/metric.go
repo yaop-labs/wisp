@@ -6,6 +6,7 @@
 package model
 
 import (
+	"encoding/binary"
 	"sort"
 	"strings"
 )
@@ -104,9 +105,11 @@ func (b Batch) Len() int {
 }
 
 // CanonicalKey renders a label set as a stable string key, independent of input
-// order: labels are sorted by name (then value) and joined as name=value with a
-// NUL delimiter. Used wherever a label set needs a map key or identity (series
-// fingerprints, resource grouping).
+// order: labels are sorted by name (then value) and each name/value is written
+// length-prefixed. The length prefixes make the encoding injective, so no
+// attribute value (even one containing '=' or NUL from an untrusted OTLP client)
+// can forge a delimiter and collide with a different label set. Used wherever a
+// label set needs a map key or identity (series fingerprints, resource grouping).
 func CanonicalKey(labels Labels) string {
 	sorted := append(Labels(nil), labels...)
 	sort.Slice(sorted, func(i, j int) bool {
@@ -116,11 +119,15 @@ func CanonicalKey(labels Labels) string {
 		return sorted[i].Name < sorted[j].Name
 	})
 	var b strings.Builder
+	var num [binary.MaxVarintLen64]byte
+	writeLenPrefixed := func(s string) {
+		n := binary.PutUvarint(num[:], uint64(len(s)))
+		b.Write(num[:n])
+		b.WriteString(s)
+	}
 	for _, l := range sorted {
-		b.WriteString(l.Name)
-		b.WriteByte('=')
-		b.WriteString(l.Value)
-		b.WriteByte(0)
+		writeLenPrefixed(l.Name)
+		writeLenPrefixed(l.Value)
 	}
 	return b.String()
 }

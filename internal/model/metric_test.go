@@ -16,6 +16,23 @@ func TestBatchLenCountsPoints(t *testing.T) {
 	}
 }
 
+func TestCanonicalKeyOrderIndependentAndInjectionSafe(t *testing.T) {
+	// Order-independent: reordering labels yields the same key.
+	x := Labels{{Name: "a", Value: "1"}, {Name: "b", Value: "2"}}
+	y := Labels{{Name: "b", Value: "2"}, {Name: "a", Value: "1"}}
+	if CanonicalKey(x) != CanonicalKey(y) {
+		t.Error("CanonicalKey should be independent of label order")
+	}
+
+	// Injection-safe: two distinct label sets that collide under a naive
+	// name=value\x00 encoding must produce different keys.
+	a := Labels{{Name: "a", Value: "b"}, {Name: "c", Value: "d"}}
+	b := Labels{{Name: "a", Value: "b\x00c=d"}}
+	if CanonicalKey(a) == CanonicalKey(b) {
+		t.Error("distinct label sets collided in CanonicalKey (delimiter injection)")
+	}
+}
+
 func TestMetricTypeString(t *testing.T) {
 	cases := map[MetricType]string{
 		MetricGauge:                "gauge",
