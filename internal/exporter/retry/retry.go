@@ -5,6 +5,7 @@ package retry
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/yaop-labs/wisp/internal/model"
@@ -54,6 +55,9 @@ func (e *Exporter) Export(ctx context.Context, b model.Batch) error {
 		}
 		if err = e.inner.Export(ctx, b); err == nil {
 			return nil
+		}
+		if errors.Is(err, pipeline.ErrPermanent) {
+			return err // the batch is bad; retrying can't help (spool quarantines it)
 		}
 	}
 	return err

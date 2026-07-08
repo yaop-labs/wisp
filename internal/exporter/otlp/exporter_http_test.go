@@ -2,6 +2,7 @@ package otlp
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/yaop-labs/wisp/internal/model"
+	"github.com/yaop-labs/wisp/internal/pipeline"
 )
 
 func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -115,5 +117,38 @@ func TestHTTPTransportErrorStatus(t *testing.T) {
 	b := model.Batch{Series: []model.Series{{Name: "m", Type: model.MetricGauge, Points: []model.Point{{IntValue: 1}}}}}
 	if err := e.Export(context.Background(), b); err == nil {
 		t.Fatal("export to a 500 endpoint should error")
+	}
+}
+
+func TestHTTPTransportClassifiesStatus(t *testing.T) {
+	cases := []struct {
+		code      int
+		permanent bool
+	}{
+		{http.StatusBadRequest, true},            // 400: malformed
+		{http.StatusRequestEntityTooLarge, true}, // 413: oversized
+		{http.StatusUnprocessableEntity, true},   // 422
+		{http.StatusTooManyRequests, false},      // 429: back off, don't drop
+		{http.StatusInternalServerError, false},  // 500: transient
+		{http.StatusServiceUnavailable, false},   // 503: transient
+	}
+	b := model.Batch{Series: []model.Series{{Name: "m", Type: model.MetricGauge, Points: []model.Point{{IntValue: 1}}}}}
+	for _, tc := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "nope", tc.code)
+		}))
+		e, err := New(Config{Endpoint: srv.URL + "/v1/metrics", Protocol: "http", Timeout: 2 * time.Second}, discardLog())
+		if err != nil {
+			srv.Close()
+			t.Fatal(err)
+		}
+		gotErr := e.Export(context.Background(), b)
+		if gotErr == nil {
+			t.Errorf("status %d: expected an error", tc.code)
+		} else if got := errors.Is(gotErr, pipeline.ErrPermanent); got != tc.permanent {
+			t.Errorf("status %d: permanent=%v, want %v", tc.code, got, tc.permanent)
+		}
+		_ = e.Close()
+		srv.Close()
 	}
 }

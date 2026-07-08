@@ -25,14 +25,17 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 
 	"github.com/yaop-labs/wisp/internal/model"
+	"github.com/yaop-labs/wisp/internal/pipeline"
 	"github.com/yaop-labs/wisp/internal/selfobs"
 )
 
@@ -130,7 +133,24 @@ func (t *grpcTransport) send(ctx context.Context, req *colmetricspb.ExportMetric
 		ctx = metadata.NewOutgoingContext(ctx, t.md)
 	}
 	_, err := t.client.Export(ctx, req)
+	if err != nil && permanentGRPC(status.Code(err)) {
+		return fmt.Errorf("%w: %w", pipeline.ErrPermanent, err)
+	}
 	return err
+}
+
+// permanentGRPC reports gRPC codes that mean the batch itself is bad and will
+// never be accepted, so holding or retrying it is pointless. ResourceExhausted
+// is included because the client raises it for an oversized message (larger than
+// the max send size); wisp does its own backpressure, so a server rate-limit
+// signalled the same way is acceptably treated as permanent rather than looping.
+func permanentGRPC(c codes.Code) bool {
+	switch c {
+	case codes.InvalidArgument, codes.OutOfRange, codes.Unimplemented, codes.ResourceExhausted:
+		return true
+	default:
+		return false
+	}
 }
 
 // metadataFrom builds gRPC metadata from header config (keys lowercased per
@@ -190,10 +210,22 @@ func (t *httpTransport) send(ctx context.Context, req *colmetricspb.ExportMetric
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+		err := fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+		if permanentHTTP(resp.StatusCode) {
+			return fmt.Errorf("%w: %w", pipeline.ErrPermanent, err)
+		}
+		return err
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
+}
+
+// permanentHTTP reports HTTP statuses that mean the request is bad and won't
+// succeed on retry: 4xx client errors other than 408 (timeout) and 429 (rate
+// limit). 5xx are transient (server-side), worth retrying/spooling.
+func permanentHTTP(code int) bool {
+	return code >= 400 && code < 500 &&
+		code != http.StatusRequestTimeout && code != http.StatusTooManyRequests
 }
 
 func (t *httpTransport) close() error { return nil }

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -296,6 +297,18 @@ func (e *Exporter) drain(ctx context.Context) {
 			continue
 		}
 		if err := e.inner.Export(ctx, b); err != nil {
+			if errors.Is(err, pipeline.ErrPermanent) {
+				// Downstream rejects this batch permanently (malformed/oversized).
+				// Discard it so it can't wedge the head of the queue forever;
+				// newer batches behind it still get a chance to drain.
+				e.logger.Warn("spool: quarantining permanently-rejected batch", "file", f.path, "err", err)
+				if rmErr := os.Remove(f.path); rmErr == nil {
+					e.curBytes.Add(-f.size)
+					e.curCount.Add(-1)
+					selfobs.SpoolQuarantined.Inc()
+				}
+				continue
+			}
 			e.updatePressure()
 			return // still failing; try again next tick
 		}
