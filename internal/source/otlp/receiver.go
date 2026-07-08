@@ -195,7 +195,6 @@ func (r *Receiver) ingest(ctx context.Context, req *colmetricspb.ExportMetricsSe
 	}
 	b := model.Batch{Series: series}
 	selfobs.OTLPReceived.Add(uint64(b.Len()))
-	selfobs.SamplesEmitted.Add(uint64(b.Len()))
 	return r.emit(ctx, b)
 }
 

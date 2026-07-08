@@ -88,7 +88,6 @@ func (s *Source) collectAndEmit(ctx context.Context, emit func(context.Context, 
 	}
 	selfobs.HostCollections.Inc()
 	batch := model.Batch{Series: series}
-	selfobs.SamplesEmitted.Add(uint64(batch.Len()))
 	if err := emit(ctx, batch); err != nil && ctx.Err() == nil && !errors.Is(err, pipeline.ErrBackpressure) {
 		s.logger.Warn("host emit failed", "err", err)
 	}

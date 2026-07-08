@@ -280,7 +280,6 @@ func (s *Source) scrapeOne(ctx context.Context, tg Target, emit func(context.Con
 		series[i].Resource = resource
 	}
 	batch := model.Batch{Series: series}
-	selfobs.SamplesEmitted.Add(uint64(batch.Len()))
 	if err := emit(ctx, batch); err != nil && ctx.Err() == nil && !errors.Is(err, pipeline.ErrBackpressure) {
 		s.logger.Warn("scrape emit failed", "job", tg.Job, "err", err)
 	}

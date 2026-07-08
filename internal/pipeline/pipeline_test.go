@@ -180,6 +180,41 @@ func TestShutdownDrainsUnderLiveContext(t *testing.T) {
 	}
 }
 
+func TestEmitCountsOnlyAdmitted(t *testing.T) {
+	src := &captureSource{emitCh: make(chan func(context.Context, model.Batch) error, 1)}
+	var pressure atomic.Bool
+	p := New(Config{Workers: 1, QueueSize: 8}, logger())
+	p.AddSource(src)
+	p.AddExporter(&collectExporter{})
+	p.SetPressure(pressure.Load)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := p.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cancel(); _ = p.Shutdown(context.Background()) }()
+	emit := <-src.emitCh
+
+	// Admitted to the queue -> counted as emitted.
+	base := selfobs.SamplesEmitted.Get()
+	if err := emit(ctx, oneBatch); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if d := selfobs.SamplesEmitted.Get() - base; d != uint64(oneBatch.Len()) {
+		t.Fatalf("admitted delta = %d, want %d (accounting must live in emit)", d, oneBatch.Len())
+	}
+
+	// Shed by backpressure -> not counted as emitted.
+	pressure.Store(true)
+	mid := selfobs.SamplesEmitted.Get()
+	if err := emit(ctx, oneBatch); !errors.Is(err, ErrBackpressure) {
+		t.Fatalf("emit under pressure = %v, want ErrBackpressure", err)
+	}
+	if d := selfobs.SamplesEmitted.Get() - mid; d != 0 {
+		t.Errorf("shed batch counted as emitted: delta = %d, want 0", d)
+	}
+}
+
 func TestStripMetaLabels(t *testing.T) {
 	b := model.Batch{Series: []model.Series{{
 		Name: "m",

@@ -124,6 +124,10 @@ func (p *Pipeline) Start(ctx context.Context) error {
 		p.batchesIn.Add(1)
 		select {
 		case p.in <- b:
+			// Count points as emitted only once they are actually admitted to the
+			// queue - not at the source, where a shed or dropped batch would still
+			// be counted (inflating loss = emitted - exported - shed).
+			selfobs.SamplesEmitted.Add(uint64(b.Len()))
 			return nil
 		case <-ctx.Done():
 			p.batchesDropped.Add(1)
