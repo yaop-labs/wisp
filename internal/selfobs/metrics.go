@@ -28,6 +28,7 @@ var (
 	CardinalityUntracked = &Counter{} // wisp_cardinality_untracked_total
 	LabelLimitDropped    = &Counter{} // wisp_label_limit_dropped_total
 	ResetUntracked       = &Counter{} // wisp_reset_untracked_total
+	ResetReordered       = &Counter{} // wisp_reset_reordered_total
 	SpoolEnqueued        = &Counter{} // wisp_spool_enqueued_total
 	SpoolDrained         = &Counter{} // wisp_spool_drained_total
 	SpoolDropped         = &Counter{} // wisp_spool_dropped_total
@@ -53,6 +54,7 @@ var registry = []metric{
 	{"wisp_cardinality_untracked_total", "New series admitted un-budgeted because the cardinality tracker is at capacity.", CardinalityUntracked},
 	{"wisp_label_limit_dropped_total", "Series dropped because they exceeded max_labels_per_series.", LabelLimitDropped},
 	{"wisp_reset_untracked_total", "Counter points not reset-normalized because the reset tracker is at capacity.", ResetUntracked},
+	{"wisp_reset_reordered_total", "Counter points seen out of order (older timestamp than the series' last processed point); passed through without reset detection to avoid spurious inflation.", ResetReordered},
 	{"wisp_spool_enqueued_total", "Batches written to the on-disk spool after export failure.", SpoolEnqueued},
 	{"wisp_spool_drained_total", "Spooled batches successfully re-sent.", SpoolDrained},
 	{"wisp_spool_dropped_total", "Spooled batches dropped because the spool was full.", SpoolDropped},

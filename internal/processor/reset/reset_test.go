@@ -80,6 +80,46 @@ func TestResetTrackerCap(t *testing.T) {
 	}
 }
 
+func TestResetIgnoresOutOfOrderBatch(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	tc := func(raw int64, ts uint64) model.Batch {
+		return model.Batch{Series: []model.Series{{
+			Name: "c", Type: model.MetricSum, Monotonic: true,
+			Resource: model.Labels{{Name: "service.name", Value: "app"}},
+			Points:   []model.Point{{IntValue: raw, TimeUnixNano: ts}},
+		}}}
+	}
+
+	// The newer scrape (t=200, raw=1000) is processed before the older one
+	// (t=100, raw=990) — the exact reordering a multi-worker pool allows.
+	out, _ := p.Process(ctx, tc(1000, 200))
+	if got, _ := adjusted(out); got != 1000 {
+		t.Fatalf("baseline adjusted=%d, want 1000", got)
+	}
+
+	before := selfobs.ResetReordered.Get()
+	out, _ = p.Process(ctx, tc(990, 100)) // stale: must NOT be read as a reset
+	if got, _ := adjusted(out); got != 990 {
+		t.Errorf("out-of-order point adjusted=%d, want 990 (offset must stay 0)", got)
+	}
+	if selfobs.ResetReordered.Get() == before {
+		t.Error("ResetReordered should have incremented for the out-of-order point")
+	}
+
+	// A later in-order point must be unaffected — no phantom offset carried.
+	out, _ = p.Process(ctx, tc(1100, 300))
+	if got, _ := adjusted(out); got != 1100 {
+		t.Errorf("after out-of-order point adjusted=%d, want 1100", got)
+	}
+
+	// A genuine reset (newer time, lower raw) still normalizes.
+	out, _ = p.Process(ctx, tc(5, 400))
+	if got, _ := adjusted(out); got != 1105 { // 5 + carried 1100
+		t.Errorf("genuine reset adjusted=%d, want 1105", got)
+	}
+}
+
 func TestGaugeUntouched(t *testing.T) {
 	p := New()
 	b := model.Batch{Series: []model.Series{{

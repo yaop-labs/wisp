@@ -30,8 +30,9 @@ type Processor struct {
 }
 
 type counterState struct {
-	lastRaw float64
-	offset  float64
+	lastRaw  float64
+	offset   float64
+	lastTime uint64 // TimeUnixNano of the newest point that advanced this state
 }
 
 func New() *Processor {
@@ -52,7 +53,8 @@ func (p *Processor) Process(_ context.Context, b model.Batch) (model.Batch, erro
 			pt := &s.Points[pi]
 			raw := pointValue(pt)
 			st := p.state[key]
-			if st == nil {
+			switch {
+			case st == nil:
 				if len(p.state) >= p.maxSeries {
 					// Tracker is full: pass the point through un-normalized rather
 					// than grow state without bound.
@@ -60,13 +62,23 @@ func (p *Processor) Process(_ context.Context, b model.Batch) (model.Batch, erro
 					continue
 				}
 				// First observation of this series: adopt it as the baseline.
-				st = &counterState{lastRaw: raw}
+				st = &counterState{lastRaw: raw, lastTime: pt.TimeUnixNano}
 				p.state[key] = st
-			} else {
+			case pt.TimeUnixNano < st.lastTime:
+				// Out-of-order point. The pipeline hands batches to NumCPU workers
+				// off one queue with no per-source ordering, so a newer scrape of
+				// this series can be processed before an older one. Reading
+				// raw < lastRaw as a reset here would carry lastRaw into the offset
+				// permanently (a phantom rate spike in amber that never
+				// self-corrects). Emit with the current offset but let the newer
+				// point keep ownership of the state.
+				selfobs.ResetReordered.Inc()
+			default:
 				if raw < st.lastRaw {
 					st.offset += st.lastRaw // reset: carry the pre-reset total forward
 				}
 				st.lastRaw = raw
+				st.lastTime = pt.TimeUnixNano
 			}
 			setPointValue(pt, raw+st.offset)
 		}
