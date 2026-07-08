@@ -1,0 +1,96 @@
+# wisp config example. The binary refuses to start without --config.
+# Metric contract (OTLP): wisp → coral → amber. Design docs live in the private vault.
+
+agent:
+  log_level: info
+  self_metrics:
+    endpoint: "0.0.0.0:9090" # wisp's own Prometheus /metrics
+
+sources:
+  # Node metrics from /proc, /sys: cpu, memory, network, load.
+  host:
+    interval: 15s
+    collectors: [cpu, memory, network, load]
+
+  # Prometheus/OpenMetrics pull scraping: static targets and/or file_sd.
+  # scrape:
+  #   interval: 30s
+  #   targets:
+  #     - job: app
+  #       static: ["127.0.0.1:8080"]
+  #   file_sd:
+  #     - files: ["/etc/wisp/targets/*.json"] # Prometheus file_sd JSON
+  #   dns_sd:                                  # DNS service discovery
+  #     - job: node
+  #       names: ["_metrics._tcp.svc.cluster.local"]
+  #       type: srv                            # SRV gives host+port
+  #     - job: app
+  #       names: ["app.svc.cluster.local"]
+  #       type: a                              # A/AAAA need an explicit port
+  #       port: 8080
+  #   kubernetes_sd:                           # in-cluster pod discovery (no client-go)
+  #     - job: pods
+  #       namespace: ""                        # empty = all namespaces
+  #       port: 8080                           # fallback; prometheus.io/port wins
+  #       # pods opt in via prometheus.io/scrape: "true"; targets carry
+  #       # __meta_kubernetes_* labels for relabel
+
+  # Receive OTLP from apps using an OTel SDK (wisp as a local gateway/sidecar).
+  # otlp:
+  #   grpc: "0.0.0.0:4317"
+  #   http: "0.0.0.0:4318"
+  #   tls:                       # secure the receiver (mTLS when client_ca_file set)
+  #     enabled: true
+  #     cert_file: /etc/wisp/server.crt
+  #     key_file: /etc/wisp/server.key
+  #     client_ca_file: /etc/wisp/ca.crt   # require+verify client certs (mTLS)
+  #   auth:
+  #     api_keys: ["${WISP_INGEST_KEY}"]   # require Authorization: Bearer <key>
+
+  # Kernel-side RED/L7 metrics without instrumenting the app. Linux-only, CAP_BPF.
+  # ebpf:
+  #   probes: [http, grpc]
+
+processors:
+  # Edge relabeling: keep/drop/replace/labeldrop/labelkeep (Prometheus subset).
+  - type: relabel
+    rules:
+      - source_labels: [__name__]
+        regex: "go_gc_.*"
+        action: drop
+  # relabel can act on discovery meta labels (e.g. keep only SRV-discovered
+  # targets), then __meta_* labels are stripped before export automatically.
+  # Normalize counter resets so amber's rate() stays correct across restarts.
+  - type: reset
+  # Edge cardinality budget per target.
+  - type: cardinality_limit
+    max_series_per_target: 100000
+
+exporter:
+  otlp:
+    endpoint: "127.0.0.1:4317" # collector OTLP gRPC (or amber directly in v0)
+    protocol: grpc
+    timeout: 5s
+    # tls:                      # verify the collector; supply a client cert for mTLS
+    #   enabled: true
+    #   ca_file: /etc/wisp/ca.crt
+    #   cert_file: /etc/wisp/client.crt   # client cert (mTLS)
+    #   key_file: /etc/wisp/client.key
+    # headers:                  # sent with every export; values never logged
+    #   authorization: "Bearer ${WISP_EGRESS_KEY}"
+    retry:
+      max_attempts: 5
+      initial_backoff: 200ms
+      max_backoff: 10s
+  spool:
+    dir: "./wisp-spool"
+    max_bytes: 536870912 # 512 MiB on-disk buffer for collector/amber downtime
+    max_age: 6h # drop spooled batches older than this (stale data isn't worth keeping)
+    # Backpressure: when the spool passes ~80% of max_bytes, wisp sheds at the
+    # source — pull scrapes are skipped, the OTLP receiver returns 429 /
+    # RESOURCE_EXHAUSTED — and releases below ~50%. See wisp_backpressure_active.
+
+resource:
+  attributes:
+    service.name: "wisp" # required by the contract
+    # host.name, k8s.* are auto-detected / injected in later phases
