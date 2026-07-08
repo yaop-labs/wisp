@@ -161,7 +161,13 @@ func setLabel(s *model.Series, name, value string) {
 	}
 	for i := range s.Attrs {
 		if s.Attrs[i].Name == name {
-			s.Attrs[i].Value = value
+			// Copy-on-write: Process only shallow-copies each Series, so s.Attrs
+			// can share its backing array with sibling series (e.g. host.go emits
+			// one device slice for both receive and transmit). Mutating in place
+			// would rewrite the sibling's label too, so clone before overwriting.
+			attrs := append(model.Labels(nil), s.Attrs...)
+			attrs[i].Value = value
+			s.Attrs = attrs
 			return
 		}
 	}

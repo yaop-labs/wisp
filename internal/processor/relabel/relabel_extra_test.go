@@ -57,6 +57,32 @@ func TestReplaceEmptyReplacementRemovesLabel(t *testing.T) {
 	}
 }
 
+func TestReplaceDoesNotCorruptSharedBackingArray(t *testing.T) {
+	// host.go emits sibling series (receive+transmit) that share one Attrs
+	// backing array. Process shallow-copies each Series, so a replace rule
+	// matching only the receive series must not rewrite the transmit series'
+	// label through the shared array.
+	shared := model.Labels{{Name: "device", Value: "eth0"}}
+	in := []model.Series{
+		{Name: "node_network_receive_bytes_total", Attrs: shared, Points: []model.Point{{IntValue: 1}}},
+		{Name: "node_network_transmit_bytes_total", Attrs: shared, Points: []model.Point{{IntValue: 2}}},
+	}
+	out := run(t, []Rule{{
+		SourceLabels: []string{"__name__"},
+		Regex:        "node_network_receive_bytes_total",
+		TargetLabel:  "device",
+		Replacement:  "renamed",
+		Action:       "replace",
+	}}, in)
+
+	if got, _ := attr(&out[0], "device"); got != "renamed" {
+		t.Errorf("receive series device = %q, want renamed", got)
+	}
+	if got, _ := attr(&out[1], "device"); got != "eth0" {
+		t.Errorf("transmit series device corrupted through shared array: = %q, want eth0", got)
+	}
+}
+
 func TestNewErrors(t *testing.T) {
 	if _, err := New([]Rule{{Regex: "(", Action: "keep"}}); err == nil {
 		t.Error("bad regex should error")

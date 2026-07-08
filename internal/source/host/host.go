@@ -236,12 +236,16 @@ func (s *Source) network(ts uint64) []model.Series {
 		if len(f) < 9 {
 			continue
 		}
-		attrs := model.Labels{{Name: "device", Value: dev}}
+		// Give each series its own device slice: downstream processors (relabel)
+		// mutate Attrs after a shallow Series copy, so a shared slice would let a
+		// rewrite of one series corrupt the other.
 		if rx, err := strconv.ParseInt(f[0], 10, 64); err == nil {
-			out = append(out, counterInt("node_network_receive_bytes_total", "bytes", ts, rx, attrs))
+			out = append(out, counterInt("node_network_receive_bytes_total", "bytes", ts, rx,
+				model.Labels{{Name: "device", Value: dev}}))
 		}
 		if tx, err := strconv.ParseInt(f[8], 10, 64); err == nil {
-			out = append(out, counterInt("node_network_transmit_bytes_total", "bytes", ts, tx, attrs))
+			out = append(out, counterInt("node_network_transmit_bytes_total", "bytes", ts, tx,
+				model.Labels{{Name: "device", Value: dev}}))
 		}
 	}
 	if err := sc.Err(); err != nil {
