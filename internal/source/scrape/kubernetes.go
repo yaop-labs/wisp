@@ -154,7 +154,11 @@ func podTarget(p *pod, k KubernetesSD) (Target, bool) {
 		return Target{}, false
 	}
 	ann := p.Metadata.Annotations
-	if ann["prometheus.io/scrape"] == "false" {
+	// Opt-in: a pod is scraped only when it explicitly sets the annotation, as the
+	// package doc and config promise. (An opt-out default would scrape every
+	// running pod in the namespace - flooding wisp_scrape_errors_total off ports
+	// that never served metrics.)
+	if ann["prometheus.io/scrape"] != "true" {
 		return Target{}, false
 	}
 	port := k.Port

@@ -21,9 +21,12 @@ const podListJSON = `{
      "status": {"phase": "Running", "podIP": "10.0.0.2"}},
     {"metadata": {"name": "pending", "namespace": "prod"},
      "status": {"phase": "Pending", "podIP": ""}},
-    {"metadata": {"name": "fallback", "namespace": "prod"},
+    {"metadata": {"name": "fallback", "namespace": "prod", "annotations": {"prometheus.io/scrape": "true"}},
      "spec": {"nodeName": "node-3"},
-     "status": {"phase": "Running", "podIP": "10.0.0.3"}}
+     "status": {"phase": "Running", "podIP": "10.0.0.3"}},
+    {"metadata": {"name": "noann", "namespace": "prod"},
+     "spec": {"nodeName": "node-4"},
+     "status": {"phase": "Running", "podIP": "10.0.0.4"}}
   ]
 }`
 
@@ -40,8 +43,9 @@ func TestKubernetesDiscovery(t *testing.T) {
 
 	tgts := s.discoverKubernetes(context.Background(), s.kubeSD)
 
-	// api-1 (annotated port 9100, path /m) + fallback (uses Port 8080); api-2
-	// opted out, pending has no IP -> both skipped.
+	// Opt-in: api-1 (scrape=true, port 9100, path /m) + fallback (scrape=true, no
+	// port -> config Port 8080). api-2 opted out, pending has no IP, and noann has
+	// no scrape annotation -> all three skipped.
 	if len(tgts) != 2 {
 		t.Fatalf("got %d targets, want 2: %+v", len(tgts), tgts)
 	}
@@ -70,6 +74,9 @@ func TestKubernetesDiscovery(t *testing.T) {
 	}
 	if _, ok := byInstance["10.0.0.3:8080"]; !ok {
 		t.Errorf("fallback target (config port) missing; have %v", keys(byInstance))
+	}
+	if _, ok := byInstance["10.0.0.4:8080"]; ok {
+		t.Error("noann pod (no scrape annotation) must not be scraped under opt-in")
 	}
 }
 
