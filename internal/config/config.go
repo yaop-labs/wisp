@@ -251,8 +251,29 @@ func (c *Config) Validate() error {
 	if o := c.Sources.OTLP; o != nil && o.GRPC == "" && o.HTTP == "" {
 		return fmt.Errorf("sources.otlp: at least one of grpc or http address is required")
 	}
+	if err := validateTLS(c.Exporter.OTLP.TLS, "exporter.otlp.tls"); err != nil {
+		return err
+	}
+	if c.Sources.OTLP != nil {
+		if err := validateTLS(c.Sources.OTLP.TLS, "sources.otlp.tls"); err != nil {
+			return err
+		}
+	}
 	if _, ok := c.Resource.Attributes["service.name"]; !ok {
 		return fmt.Errorf("resource.attributes.service.name is required (see the wisp/coral/amber metric contract)")
+	}
+	return nil
+}
+
+// validateTLS rejects a TLS block that carries cert/CA material while disabled:
+// that is almost always a forgotten `enabled: true`, and silently ignoring it
+// would send metrics and bearer tokens in plaintext.
+func validateTLS(c *TLSConfig, where string) error {
+	if c == nil || c.Enabled {
+		return nil
+	}
+	if c.CAFile != "" || c.CertFile != "" || c.KeyFile != "" || c.ClientCAFile != "" {
+		return fmt.Errorf("%s: tls fields are set but tls.enabled is false; set enabled: true or remove them", where)
 	}
 	return nil
 }

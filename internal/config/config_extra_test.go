@@ -57,6 +57,14 @@ processors: [{max_series_per_target: 10}]`, "type is required"},
 sources: {otlp: {}}
 exporter: {otlp: {endpoint: "x:4317"}}
 resource: {attributes: {service.name: wisp}}`, "grpc or http"},
+		{"exporter tls set but disabled", `
+sources: {host: {interval: 15s}}
+exporter: {otlp: {endpoint: "x:4317", tls: {enabled: false, ca_file: /ca.crt}}}
+resource: {attributes: {service.name: wisp}}`, "tls.enabled is false"},
+		{"receiver tls set but disabled", `
+sources: {otlp: {grpc: "0.0.0.0:4317", tls: {enabled: false, cert_file: /s.crt, key_file: /s.key}}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, "tls.enabled is false"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
