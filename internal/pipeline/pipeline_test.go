@@ -94,6 +94,92 @@ func TestShutdownNoPanicUnderActiveSend(t *testing.T) {
 	}
 }
 
+// gatedExporter parks the worker inside its first Export (signalling entered,
+// then waiting on release) and records whether each export ran under a live or
+// an already-cancelled context.
+type gatedExporter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	live    int
+	cancel  int
+}
+
+func (e *gatedExporter) Export(ctx context.Context, b model.Batch) error {
+	e.once.Do(func() {
+		close(e.entered)
+		<-e.release
+	})
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if ctx.Err() != nil {
+		e.cancel += b.Len()
+		return ctx.Err()
+	}
+	e.live += b.Len()
+	return nil
+}
+func (e *gatedExporter) Close() error { return nil }
+func (e *gatedExporter) counts() (live, cancel int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.live, e.cancel
+}
+
+func freshBatch() model.Batch {
+	return model.Batch{Series: []model.Series{{
+		Name: "x", Type: model.MetricGauge,
+		Points: []model.Point{{TimeUnixNano: 1, IntValue: 7}},
+	}}}
+}
+
+func TestShutdownDrainsUnderLiveContext(t *testing.T) {
+	exp := &gatedExporter{entered: make(chan struct{}), release: make(chan struct{})}
+	src := &captureSource{emitCh: make(chan func(context.Context, model.Batch) error, 1)}
+	p := New(Config{Workers: 1, QueueSize: 64}, logger())
+	p.AddSource(src)
+	p.AddExporter(exp)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := p.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	emit := <-src.emitCh
+
+	const n = 10
+	// First batch parks the single worker inside Export (dispatched under the run
+	// context); the rest sit in the queue.
+	if err := emit(ctx, freshBatch()); err != nil {
+		t.Fatalf("emit 0: %v", err)
+	}
+	<-exp.entered
+	for i := 1; i < n; i++ {
+		if err := emit(ctx, freshBatch()); err != nil {
+			t.Fatalf("emit %d: %v", i, err)
+		}
+	}
+
+	// Shutdown swaps the export context to the (live) shutdown ctx, cancels the
+	// run ctx, and closes the queue — then blocks on the gated worker.
+	done := make(chan error, 1)
+	go func() { done <- p.Shutdown(context.Background()) }()
+	time.Sleep(50 * time.Millisecond) // let Shutdown reach the swap + close
+	close(exp.release)                // release the worker to drain the queue
+
+	if err := <-done; err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	live, canceled := exp.counts()
+	if live+canceled != n {
+		t.Fatalf("handled %d points, want %d (batches lost)", live+canceled, n)
+	}
+	if live != n-1 {
+		t.Errorf("drained %d points under a live context, want %d — drain used the cancelled run ctx", live, n-1)
+	}
+}
+
 func TestStripMetaLabels(t *testing.T) {
 	b := model.Batch{Series: []model.Series{{
 		Name: "m",

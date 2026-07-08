@@ -49,11 +49,16 @@ type Pipeline struct {
 	srcWG        sync.WaitGroup // source goroutines; joined before close(in)
 	shutdownOnce sync.Once
 
-	// runCtx is a cancellable child of Start's context handed to sources and
-	// workers. Shutdown cancels it so sources stop deterministically even when
-	// the parent context is still live (e.g. a programmatic stop in tests).
+	// runCtx is a cancellable child of Start's context handed to sources.
+	// Shutdown cancels it so sources stop deterministically even when the parent
+	// context is still live (e.g. a programmatic stop in tests).
 	runCtx    context.Context
 	runCancel context.CancelFunc
+
+	// exportCtx is the context workers export under. It starts as runCtx and is
+	// swapped to the shutdown context for the final drain, so queued batches ship
+	// under a live deadline instead of the run context SIGTERM already cancelled.
+	exportCtx atomic.Pointer[context.Context]
 
 	// pressure, when set and returning true, makes emit shed batches at the
 	// source instead of admitting them. Wired to the spool's high-water mark.
@@ -67,6 +72,17 @@ type Pipeline struct {
 // SetPressure wires a backpressure signal (e.g. the spool's UnderPressure) that
 // emit consults before admitting a batch. Call before Start.
 func (p *Pipeline) SetPressure(fn func() bool) { p.pressure = fn }
+
+func (p *Pipeline) setExportCtx(ctx context.Context) { p.exportCtx.Store(&ctx) }
+
+// exportContext returns the context workers should export under (runCtx during
+// normal operation, the shutdown context during the final drain).
+func (p *Pipeline) exportContext() context.Context {
+	if c := p.exportCtx.Load(); c != nil {
+		return *c
+	}
+	return context.Background()
+}
 
 func New(cfg Config, logger *slog.Logger) *Pipeline {
 	cfg.setDefaults()
@@ -84,10 +100,11 @@ func (p *Pipeline) AddExporter(e Exporter)    { p.exporters = append(p.exporters
 // Start launches the worker pool and all sources.
 func (p *Pipeline) Start(ctx context.Context) error {
 	p.runCtx, p.runCancel = context.WithCancel(ctx)
+	p.setExportCtx(p.runCtx)
 
 	for i := 0; i < p.cfg.Workers; i++ {
 		p.wg.Add(1)
-		go p.worker(p.runCtx)
+		go p.worker()
 	}
 
 	emit := func(ctx context.Context, b model.Batch) error {
@@ -130,6 +147,11 @@ func (p *Pipeline) Shutdown(ctx context.Context) error {
 				p.logger.Error("source stop error", "err", stopErr)
 			}
 		}
+		// Export the final drain under the shutdown context, not the run context
+		// SIGTERM already cancelled — otherwise every queued batch fails Export
+		// instantly and is dropped (or loops pointlessly through the spool). Swap
+		// before cancelling runCtx so no drained batch sees a cancelled ctx. (P0-4)
+		p.setExportCtx(ctx)
 		// Cancel the run context and wait for every source goroutine (and the
 		// in-flight scrapes they spawn) to return before closing the queue.
 		// Otherwise a source still inside emit() can send on a closed channel and
@@ -166,9 +188,10 @@ func (p *Pipeline) Shutdown(ctx context.Context) error {
 	return err
 }
 
-func (p *Pipeline) worker(ctx context.Context) {
+func (p *Pipeline) worker() {
 	defer p.wg.Done()
 	for b := range p.in {
+		ctx := p.exportContext()
 		if err := p.process(ctx, b); err != nil && ctx.Err() == nil {
 			p.logger.Error("pipeline processing error", "err", err)
 		}
