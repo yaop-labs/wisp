@@ -45,8 +45,15 @@ type Pipeline struct {
 	logger     *slog.Logger
 
 	in           chan model.Batch
-	wg           sync.WaitGroup
+	wg           sync.WaitGroup // worker goroutines
+	srcWG        sync.WaitGroup // source goroutines; joined before close(in)
 	shutdownOnce sync.Once
+
+	// runCtx is a cancellable child of Start's context handed to sources and
+	// workers. Shutdown cancels it so sources stop deterministically even when
+	// the parent context is still live (e.g. a programmatic stop in tests).
+	runCtx    context.Context
+	runCancel context.CancelFunc
 
 	// pressure, when set and returning true, makes emit shed batches at the
 	// source instead of admitting them. Wired to the spool's high-water mark.
@@ -76,9 +83,11 @@ func (p *Pipeline) AddExporter(e Exporter)    { p.exporters = append(p.exporters
 
 // Start launches the worker pool and all sources.
 func (p *Pipeline) Start(ctx context.Context) error {
+	p.runCtx, p.runCancel = context.WithCancel(ctx)
+
 	for i := 0; i < p.cfg.Workers; i++ {
 		p.wg.Add(1)
-		go p.worker(ctx)
+		go p.worker(p.runCtx)
 	}
 
 	emit := func(ctx context.Context, b model.Batch) error {
@@ -100,9 +109,10 @@ func (p *Pipeline) Start(ctx context.Context) error {
 	}
 
 	for _, s := range p.sources {
-		s := s
+		p.srcWG.Add(1)
 		go func() {
-			if err := s.Start(ctx, emit); err != nil && ctx.Err() == nil {
+			defer p.srcWG.Done()
+			if err := s.Start(p.runCtx, emit); err != nil && p.runCtx.Err() == nil {
 				p.logger.Error("source exited with error", "err", err)
 			}
 		}()
@@ -120,6 +130,14 @@ func (p *Pipeline) Shutdown(ctx context.Context) error {
 				p.logger.Error("source stop error", "err", stopErr)
 			}
 		}
+		// Cancel the run context and wait for every source goroutine (and the
+		// in-flight scrapes they spawn) to return before closing the queue.
+		// Otherwise a source still inside emit() can send on a closed channel and
+		// panic, aborting shutdown before the spool is flushed. (P0-3)
+		if p.runCancel != nil {
+			p.runCancel()
+		}
+		p.srcWG.Wait()
 
 		close(p.in)
 		p.wg.Wait()

@@ -51,6 +51,49 @@ var oneBatch = model.Batch{Series: []model.Series{{
 	Points: []model.Point{{TimeUnixNano: 1, IntValue: 7}},
 }}}
 
+// floodSource emits as fast as it can until its context is cancelled, keeping a
+// goroutine parked inside emit() to race Shutdown's close(p.in).
+type floodSource struct{}
+
+func (floodSource) Start(ctx context.Context, emit func(context.Context, model.Batch) error) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+			// A fresh batch per emit, as real sources produce them — sharing one
+			// Series slice across batches would race stripMetaLabels, not close().
+			_ = emit(ctx, model.Batch{Series: []model.Series{{
+				Name: "x", Type: model.MetricGauge,
+				Points: []model.Point{{TimeUnixNano: 1, IntValue: 7}},
+			}}})
+		}
+	}
+}
+func (floodSource) Stop(context.Context) error { return nil }
+
+func TestShutdownNoPanicUnderActiveSend(t *testing.T) {
+	// A source flooding emit() must not panic on shutdown: the pipeline has to
+	// join source goroutines before close(p.in), else an in-flight send lands on
+	// a closed channel. Run under -race to widen the window.
+	p := New(Config{Workers: 2, QueueSize: 4}, logger())
+	p.AddSource(floodSource{})
+	p.AddExporter(&collectExporter{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := p.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond) // let the flood get going
+
+	// Shutdown itself cancels the run context and joins sources; a clean return
+	// (no panic) is the assertion.
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+}
+
 func TestStripMetaLabels(t *testing.T) {
 	b := model.Batch{Series: []model.Series{{
 		Name: "m",
