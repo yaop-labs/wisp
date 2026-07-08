@@ -80,7 +80,7 @@ func New(inner pipeline.Exporter, cfg Config, logger *slog.Logger) (*Exporter, e
 	if cfg.Dir == "" {
 		return nil, fmt.Errorf("spool: dir required")
 	}
-	if err := os.MkdirAll(cfg.Dir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.Dir, 0o750); err != nil {
 		return nil, fmt.Errorf("spool: mkdir %s: %w", cfg.Dir, err)
 	}
 	if cfg.DrainInterval <= 0 {
