@@ -197,9 +197,11 @@ type RetryConfig struct {
 	MaxBackoff     Duration `yaml:"max_backoff"`
 }
 
-// SpoolConfig configures the on-disk durability queue. When max_bytes is set,
-// the spool engages backpressure (sheds at the source) above ~80% full and
-// releases below ~50%; max_age caps how long spooled data is kept.
+// SpoolConfig configures the on-disk durability queue. The spool engages
+// backpressure (sheds at the source) above ~80% full and releases below ~50%;
+// max_age caps how long spooled data is kept. When enabled (dir set) but the
+// bounds are omitted they default to 512MiB / 6h so the queue can't fill the
+// disk; a negative value opts out (unbounded size / never expire).
 type SpoolConfig struct {
 	Dir      string   `yaml:"dir"`
 	MaxBytes int64    `yaml:"max_bytes"`

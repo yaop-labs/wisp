@@ -45,6 +45,34 @@ func batchSize(t *testing.T) int64 {
 	return int64(len(data))
 }
 
+// TestDefaultDurabilityBounds: omitted bounds get the code defaults (not
+// unbounded), and a negative value is an explicit opt-out.
+func TestDefaultDurabilityBounds(t *testing.T) {
+	e, err := New(&gate{}, Config{Dir: t.TempDir(), DrainInterval: time.Hour}, discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	if e.maxBytes != defaultMaxBytes {
+		t.Errorf("maxBytes = %d, want %d (default)", e.maxBytes, defaultMaxBytes)
+	}
+	if e.maxAge != defaultMaxAge {
+		t.Errorf("maxAge = %v, want %v (default)", e.maxAge, defaultMaxAge)
+	}
+
+	un, err := New(&gate{}, Config{Dir: t.TempDir(), MaxBytes: -1, MaxAge: -1, DrainInterval: time.Hour}, discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer un.Close()
+	if un.maxBytes != 0 {
+		t.Errorf("maxBytes = %d, want 0 (unbounded opt-out)", un.maxBytes)
+	}
+	if un.maxAge != 0 {
+		t.Errorf("maxAge = %v, want 0 (expiry disabled)", un.maxAge)
+	}
+}
+
 // TestBackpressureWatermarkHysteresis: pressure engages at/above the high mark,
 // holds while draining through the band, and releases only at/below the low mark.
 func TestBackpressureWatermarkHysteresis(t *testing.T) {

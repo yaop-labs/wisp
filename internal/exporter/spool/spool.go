@@ -28,11 +28,18 @@ import (
 
 const fileSuffix = ".batch"
 
+// Durability bounds applied when the config leaves them unset (0), so an enabled
+// spool is always bounded and self-expiring rather than able to fill the disk.
+const (
+	defaultMaxBytes = 512 << 20     // 512 MiB
+	defaultMaxAge   = 6 * time.Hour // spooled data older than this is dropped
+)
+
 // Config configures the spool.
 type Config struct {
 	Dir           string
-	MaxBytes      int64         // hard cap; oldest dropped to stay under it. <=0 unbounded.
-	MaxAge        time.Duration // drop spooled batches older than this. <=0 disables.
+	MaxBytes      int64         // hard cap; oldest dropped to stay under it. 0 -> 512MiB default; <0 unbounded.
+	MaxAge        time.Duration // drop spooled batches older than this. 0 -> 6h default; <0 disables.
 	HighWatermark int64         // bytes; backpressure engages at/above. Default 80% of MaxBytes.
 	LowWatermark  int64         // bytes; backpressure releases at/below. Default 50% of MaxBytes.
 	DrainInterval time.Duration
@@ -77,6 +84,21 @@ func New(inner pipeline.Exporter, cfg Config, logger *slog.Logger) (*Exporter, e
 	}
 	if cfg.DrainInterval <= 0 {
 		cfg.DrainInterval = 5 * time.Second
+	}
+	// Default the durability bounds so an enabled-but-unconfigured spool is still
+	// bounded and self-expiring. A negative value is an explicit opt-out
+	// (unbounded size / never expire).
+	switch {
+	case cfg.MaxBytes == 0:
+		cfg.MaxBytes = defaultMaxBytes
+	case cfg.MaxBytes < 0:
+		cfg.MaxBytes = 0 // unbounded
+	}
+	switch {
+	case cfg.MaxAge == 0:
+		cfg.MaxAge = defaultMaxAge
+	case cfg.MaxAge < 0:
+		cfg.MaxAge = 0 // expiry disabled
 	}
 	// Default watermarks at 80%/50% of the hard cap when not set explicitly.
 	if cfg.MaxBytes > 0 {
