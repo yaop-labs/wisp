@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -120,7 +121,11 @@ func (r *Receiver) Start(ctx context.Context, emit func(context.Context, model.B
 		mux := http.NewServeMux()
 		mux.HandleFunc("/v1/metrics", r.handleHTTP)
 		r.httpLn = ln
-		r.httpSrv = &http.Server{Handler: mux}
+		r.httpSrv = &http.Server{
+			Handler:           mux,
+			ReadHeaderTimeout: 10 * time.Second, // bound slow-header (Slowloris) clients
+			IdleTimeout:       120 * time.Second,
+		}
 		if secure {
 			r.httpSrv.TLSConfig = r.tls
 			go func() { _ = r.httpSrv.ServeTLS(ln, "", "") }() // certs come from TLSConfig

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/yaop-labs/wisp/internal/config"
 	otlpexp "github.com/yaop-labs/wisp/internal/exporter/otlp"
@@ -259,7 +260,13 @@ func (a *App) startSelfMetrics(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("self_metrics: listen %s: %w", a.selfEndpoint, err)
 	}
-	a.selfSrv = &http.Server{Handler: mux}
+	a.selfSrv = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second, // bound slow-header (Slowloris) clients
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	go func() {
 		if err := a.selfSrv.Serve(ln); err != nil && err != http.ErrServerClosed && ctx.Err() == nil {
 			a.logger.Error("self_metrics server error", "err", err)
