@@ -28,7 +28,7 @@ import (
 // improvement.
 
 const (
-	saTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	saTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // G101: well-known SA token mount path, not a hardcoded secret
 	saCAFile    = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 )
 

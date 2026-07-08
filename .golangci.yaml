@@ -33,6 +33,7 @@ linters:
         - G104 # errcheck handles this
         - G115 # intentional in binary encode/decode
         - G304 # file paths derived from internal layout
+        - G703 # spool paths are built from internal layout (dir + generated name), not user input
     gocritic:
       disabled-checks:
         - ifElseChain
@@ -42,6 +43,7 @@ linters:
         - (io.Closer).Close
         - (*os.File).Close
         - (net/http.ResponseWriter).Write
+        - fmt.Fprintf # only used to write the /metrics response; write errors are unactionable
 
   exclusions:
     rules:
