@@ -67,12 +67,14 @@ func parseLine(line string, defaultTS uint64) (name string, attrs model.Labels, 
 		attrs = parseLabels(line[i+1 : closeIdx])
 		rest = strings.TrimSpace(line[closeIdx+1:])
 	} else {
-		before, after, ok := strings.Cut(line, " ")
-		if !ok {
+		// Split on the first space OR tab: the tab is a valid Prometheus name/value
+		// separator, and a Cut on " " alone silently drops tab-separated samples.
+		i := strings.IndexAny(line, " \t")
+		if i < 0 {
 			return "", nil, 0, 0, false
 		}
-		name = strings.TrimSpace(before)
-		rest = strings.TrimSpace(after)
+		name = strings.TrimSpace(line[:i])
+		rest = strings.TrimSpace(line[i+1:])
 	}
 	if name == "" {
 		return "", nil, 0, 0, false

@@ -68,6 +68,19 @@ func TestParseLabelValueWithBrace(t *testing.T) {
 	}
 }
 
+func TestParseTabSeparatedLabelless(t *testing.T) {
+	// A label-less sample separated by a tab (valid Prometheus) must parse, not
+	// be silently dropped.
+	series := parse("go_goroutines\t42", 1)
+	s := find(series, "go_goroutines", nil)
+	if s == nil {
+		t.Fatal("tab-separated label-less line was dropped")
+	}
+	if len(s.Points) != 1 || s.Points[0].IntValue != 42 {
+		t.Errorf("value not parsed: %+v", s.Points)
+	}
+}
+
 func TestMatchingBrace(t *testing.T) {
 	cases := []struct {
 		line string
