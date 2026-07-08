@@ -61,8 +61,10 @@ func toExpHistogram(buckets map[float64]uint64, sum float64, count uint64, scale
 	var (
 		zero           uint64
 		prev           uint64
+		infDelta       uint64
 		haveFinite     bool
-		lastFinite     int32
+		topFiniteIdx   int32 // exp index of the largest finite le boundary seen
+		haveTopFinite  bool
 		minIdx, maxIdx int32
 	)
 	for _, le := range les {
@@ -72,18 +74,19 @@ func toExpHistogram(buckets map[float64]uint64, sum float64, count uint64, scale
 			delta = cum - prev
 		}
 		prev = cum
-		if delta == 0 {
-			continue
-		}
 		switch {
+		case math.IsInf(le, 1):
+			infDelta = delta // folded in after the loop
 		case le <= 0:
 			zero += delta
-		case math.IsInf(le, 1):
-			if haveFinite {
-				idxCounts[lastFinite] += delta
-			}
 		default:
-			idx := expIndex(le, scale)
+			// les are sorted ascending, so the last finite le is the largest.
+			topFiniteIdx = expIndex(le, scale)
+			haveTopFinite = true
+			if delta == 0 {
+				continue
+			}
+			idx := topFiniteIdx
 			idxCounts[idx] += delta
 			if !haveFinite || idx < minIdx {
 				minIdx = idx
@@ -92,8 +95,21 @@ func toExpHistogram(buckets map[float64]uint64, sum float64, count uint64, scale
 				maxIdx = idx
 			}
 			haveFinite = true
-			lastFinite = idx
 		}
+	}
+	// Fold the +Inf overflow into the top finite bucket. Done after the loop so it
+	// lands even when every finite bucket's delta was zero (all mass sits at or
+	// above the largest bound) - otherwise those observations would vanish from
+	// the buckets while still counted in Count.
+	if infDelta > 0 && haveTopFinite {
+		idxCounts[topFiniteIdx] += infDelta
+		if !haveFinite || topFiniteIdx < minIdx {
+			minIdx = topFiniteIdx
+		}
+		if !haveFinite || topFiniteIdx > maxIdx {
+			maxIdx = topFiniteIdx
+		}
+		haveFinite = true
 	}
 
 	eh := model.ExpHistogram{Scale: scale, ZeroCount: zero, Sum: sum, Count: count}

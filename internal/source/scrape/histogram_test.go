@@ -37,6 +37,38 @@ func TestToExpHistogramConservesCount(t *testing.T) {
 	}
 }
 
+func TestToExpHistogramInfWithEmptyFiniteBuckets(t *testing.T) {
+	// Every finite bucket is empty and all mass is at +Inf: the overflow must
+	// fold into the top finite bucket instead of vanishing (else Count would
+	// exceed the summed buckets - an internally inconsistent point for amber).
+	buckets := map[float64]uint64{
+		0.1:         0,
+		math.Inf(1): 42,
+	}
+	eh := toExpHistogram(buckets, 100, 42, 3)
+	if got := eh.ZeroCount + sumCounts(eh.PositiveCounts); got != 42 {
+		t.Errorf("observations conserved? zero+positive = %d, want 42", got)
+	}
+	if eh.Count != 42 {
+		t.Errorf("count = %d, want 42", eh.Count)
+	}
+}
+
+func TestToExpHistogramRespectsScale(t *testing.T) {
+	// The conversion is parameterized by scale; observations are conserved at any
+	// density (buckets merge as the scale coarsens, but nothing is lost).
+	buckets := map[float64]uint64{0.5: 3, 2: 7, math.Inf(1): 7}
+	for _, scale := range []int32{0, 2, 5} {
+		eh := toExpHistogram(buckets, 1.0, 7, scale)
+		if eh.Scale != scale {
+			t.Errorf("scale %d: eh.Scale = %d", scale, eh.Scale)
+		}
+		if got := eh.ZeroCount + sumCounts(eh.PositiveCounts); got != 7 {
+			t.Errorf("scale %d: conserved = %d, want 7", scale, got)
+		}
+	}
+}
+
 func TestToExpHistogramZeroBucket(t *testing.T) {
 	// le<=0 observations go to ZeroCount.
 	buckets := map[float64]uint64{
