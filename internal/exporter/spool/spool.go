@@ -2,7 +2,8 @@
 // fails, the batch is written to disk instead of dropped and a background
 // drainer re-sends it once downstream recovers. Spooled batches survive
 // restarts (the drainer picks up existing files on startup). The queue is
-// bounded by max_bytes (oldest dropped) and crash-safe via temp-file + rename.
+// bounded by max_bytes (oldest dropped) and crash-safe: each batch is written to
+// a temp file, fsync'd, renamed into place, and the directory is fsync'd.
 package spool
 
 import (
@@ -215,16 +216,53 @@ func (e *Exporter) enqueue(b model.Batch) error {
 	name := fmt.Sprintf("%020d-%06d%s", time.Now().UnixNano(), e.seq.Add(1), fileSuffix)
 	final := filepath.Join(e.dir, name)
 	tmp := final + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := writeFileSync(tmp, data); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, final); err != nil {
+		return err
+	}
+	// fsync the directory so the rename (the new entry) is itself durable; without
+	// it a crash can lose a batch we already told the caller was accepted.
+	if err := syncDir(e.dir); err != nil {
 		return err
 	}
 	e.curBytes.Add(int64(len(data)))
 	e.curCount.Add(1)
 	e.updatePressure()
 	return nil
+}
+
+// writeFileSync writes data to path and fsyncs the file before returning, so a
+// crash after enqueue cannot leave a zero-length or torn file that decodes to
+// garbage on restart. Mode 0o600: spool files hold metric payloads.
+func writeFileSync(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// syncDir fsyncs a directory so entry changes (a rename into it) survive a crash.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return err
+	}
+	return d.Close()
 }
 
 // ensureRoom drops oldest batches until data of size need fits within maxBytes.
@@ -309,12 +347,14 @@ func (e *Exporter) drain(ctx context.Context) {
 		}
 		b, err := decode(data)
 		if err != nil {
-			// Corrupt entry: drop it rather than block the queue forever.
+			// Undecodable entry (torn by a crash mid-write, or bit-rot): drop it
+			// rather than block the queue forever, and count it distinctly from
+			// capacity evictions so operators can see durability damage.
 			e.logger.Warn("spool: dropping undecodable batch", "file", f.path, "err", err)
 			if rmErr := os.Remove(f.path); rmErr == nil {
 				e.curBytes.Add(-f.size)
 				e.curCount.Add(-1)
-				selfobs.SpoolDropped.Inc()
+				selfobs.SpoolCorrupt.Inc()
 			}
 			continue
 		}

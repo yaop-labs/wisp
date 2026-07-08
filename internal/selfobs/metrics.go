@@ -33,6 +33,7 @@ var (
 	SpoolDrained         = &Counter{} // wisp_spool_drained_total
 	SpoolDropped         = &Counter{} // wisp_spool_dropped_total
 	SpoolQuarantined     = &Counter{} // wisp_spool_quarantined_total
+	SpoolCorrupt         = &Counter{} // wisp_spool_corrupt_total
 	SpoolExpired         = &Counter{} // wisp_spool_expired_total
 	SpoolWriteErrors     = &Counter{} // wisp_spool_write_errors_total
 	BackpressureShed     = &Counter{} // wisp_backpressure_shed_total
@@ -60,6 +61,7 @@ var registry = []metric{
 	{"wisp_spool_drained_total", "Spooled batches successfully re-sent.", SpoolDrained},
 	{"wisp_spool_dropped_total", "Spooled batches dropped because the spool was full.", SpoolDropped},
 	{"wisp_spool_quarantined_total", "Spooled batches discarded on drain because downstream rejected them permanently (malformed/oversized).", SpoolQuarantined},
+	{"wisp_spool_corrupt_total", "Spooled files dropped on drain because they could not be decoded (torn by a crash mid-write, or bit-rot).", SpoolCorrupt},
 	{"wisp_spool_expired_total", "Spooled batches dropped because they exceeded max_age.", SpoolExpired},
 	{"wisp_spool_write_errors_total", "Spool persistence failures (durability layer I/O errors).", SpoolWriteErrors},
 	{"wisp_backpressure_shed_total", "Data points shed at the source because the spool crossed its high-water mark.", BackpressureShed},

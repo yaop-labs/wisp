@@ -55,6 +55,30 @@ func TestSpoolWriteFailureMarksUnhealthy(t *testing.T) {
 	}
 }
 
+// TestDrainCountsCorruptFile: an undecodable .batch file (torn by a crash
+// mid-write) is dropped on drain and counted distinctly from capacity evictions.
+func TestDrainCountsCorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "00000000000000000001-000001.batch")
+	if err := os.WriteFile(bad, []byte("not-gob"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e, err := New(&gate{allow: 10}, Config{Dir: dir, DrainInterval: time.Hour}, discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+
+	before := selfobs.SpoolCorrupt.Get()
+	e.drain(context.Background())
+	if n := countFiles(dir); n != 0 {
+		t.Fatalf("corrupt file not removed, %d remain", n)
+	}
+	if d := selfobs.SpoolCorrupt.Get() - before; d != 1 {
+		t.Errorf("SpoolCorrupt delta = %d, want 1", d)
+	}
+}
+
 // TestCleanupTempOnStart drops torn .tmp files left by a previous crash.
 func TestCleanupTempOnStart(t *testing.T) {
 	dir := t.TempDir()
