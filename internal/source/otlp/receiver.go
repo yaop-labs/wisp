@@ -143,7 +143,22 @@ func (r *Receiver) Start(ctx context.Context, emit func(context.Context, model.B
 // Stop gracefully shuts the servers down.
 func (r *Receiver) Stop(ctx context.Context) error {
 	if r.grpcSrv != nil {
-		r.grpcSrv.GracefulStop()
+		// GracefulStop waits for in-flight RPCs with no deadline of its own, so a
+		// stalled client would hold it past the shutdown budget and block the
+		// spool flush. Run it in the background and hard-Stop when ctx expires.
+		done := make(chan struct{})
+		go func() {
+			r.grpcSrv.GracefulStop()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			// Force-close connections and cancel RPC contexts; the GracefulStop
+			// goroutine unwinds as ctx-respecting handlers return (a handler that
+			// ignores its context is left to the exiting process).
+			r.grpcSrv.Stop()
+		}
 	}
 	if r.httpSrv != nil {
 		return r.httpSrv.Shutdown(ctx)

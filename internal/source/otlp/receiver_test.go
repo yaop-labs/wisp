@@ -127,6 +127,54 @@ func TestRoundTripHistogram(t *testing.T) {
 	}
 }
 
+// TestGRPCStopHonorsContext: a stalled in-flight RPC must not let Stop outlast
+// its context. GracefulStop alone would hang until the handler returns.
+func TestGRPCStopHonorsContext(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	r := New(Options{GRPCAddr: "127.0.0.1:0"}, logger)
+
+	inHandler := make(chan struct{})
+	block := make(chan struct{})
+	defer close(block)
+	go func() {
+		_ = r.Start(t.Context(), func(hctx context.Context, _ model.Batch) error {
+			close(inHandler)
+			// Stall until either the test ends or Stop cancels the RPC context.
+			// GracefulStop alone never cancels it, so the old Stop would hang here.
+			select {
+			case <-block:
+			case <-hctx.Done():
+			}
+			return nil
+		})
+	}()
+
+	e, err := exp.New(exp.Config{Endpoint: r.GRPCAddr(), Protocol: "grpc", Timeout: 30 * time.Second}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+
+	go func() {
+		_ = e.Export(context.Background(), model.Batch{Series: []model.Series{{
+			Name: "m", Type: model.MetricGauge,
+			Resource: model.Labels{{Name: "service.name", Value: "app"}},
+			Points:   []model.Point{{IntValue: 1}},
+		}}})
+	}()
+	<-inHandler // an RPC is now stalled in the handler
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- r.Stop(stopCtx) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop hung on a stalled in-flight RPC (GracefulStop ignored ctx)")
+	}
+}
+
 func labelValue(ls model.Labels, name string) string {
 	for _, l := range ls {
 		if l.Name == name {
