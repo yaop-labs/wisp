@@ -6,7 +6,6 @@ package host
 import (
 	"bufio"
 	"context"
-	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -89,7 +88,7 @@ func (s *Source) collectAndEmit(ctx context.Context, emit func(context.Context, 
 	}
 	selfobs.HostCollections.Inc()
 	batch := model.Batch{Series: series}
-	if err := emit(ctx, batch); err != nil && ctx.Err() == nil && !errors.Is(err, pipeline.ErrBackpressure) {
+	if err := emit(ctx, batch); pipeline.IsLoggableEmitError(ctx, err) {
 		s.logger.Warn("host emit failed", "err", err)
 	}
 }

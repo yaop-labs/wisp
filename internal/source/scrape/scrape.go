@@ -9,7 +9,6 @@ package scrape
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -280,7 +279,7 @@ func (s *Source) scrapeOne(ctx context.Context, tg Target, emit func(context.Con
 		series[i].Resource = resource
 	}
 	batch := model.Batch{Series: series}
-	if err := emit(ctx, batch); err != nil && ctx.Err() == nil && !errors.Is(err, pipeline.ErrBackpressure) {
+	if err := emit(ctx, batch); pipeline.IsLoggableEmitError(ctx, err) {
 		s.logger.Warn("scrape emit failed", "job", tg.Job, "err", err)
 	}
 }

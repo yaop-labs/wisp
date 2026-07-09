@@ -52,6 +52,48 @@ func (passProcessor) Close() error                                              
 
 func logger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+type funcExporter struct{ fn func(model.Batch) }
+
+func (e *funcExporter) Export(_ context.Context, b model.Batch) error { e.fn(b); return nil }
+func (e *funcExporter) Close() error                                  { return nil }
+
+// TestPipelineStripsMetaLabels: the auto-appended meta-strip stage removes
+// __meta_* before export, through the full pipeline (not just the helper).
+func TestPipelineStripsMetaLabels(t *testing.T) {
+	captured := make(chan model.Batch, 1)
+	src := &captureSource{emitCh: make(chan func(context.Context, model.Batch) error, 1)}
+	p := New(Config{Workers: 1, QueueSize: 8}, logger())
+	p.AddSource(src)
+	p.AddExporter(&funcExporter{fn: func(b model.Batch) { captured <- b }})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { cancel(); _ = p.Shutdown(context.Background()) }()
+	if err := p.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	emit := <-src.emitCh
+	_ = emit(ctx, model.Batch{Series: []model.Series{{
+		Name:     "m",
+		Resource: model.Labels{{Name: "service.name", Value: "app"}, {Name: "__meta_dns_name", Value: "svc"}},
+		Attrs:    model.Labels{{Name: "route", Value: "/x"}, {Name: "__meta_k8s_pod", Value: "p"}},
+		Points:   []model.Point{{IntValue: 1}},
+	}}})
+
+	select {
+	case got := <-captured:
+		s := got.Series[0]
+		for _, ls := range []model.Labels{s.Resource, s.Attrs} {
+			for _, l := range ls {
+				if len(l.Name) >= 7 && l.Name[:7] == "__meta_" {
+					t.Errorf("meta label leaked to exporter: %s", l.Name)
+				}
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for exported batch")
+	}
+}
+
 func TestPipelineEndToEnd(t *testing.T) {
 	src := &captureSource{emitCh: make(chan func(context.Context, model.Batch) error, 1)}
 	exp := &recordExporter{}

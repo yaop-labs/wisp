@@ -20,6 +20,14 @@ import (
 // it to gRPC RESOURCE_EXHAUSTED / HTTP 429 so the client backs off.
 var ErrBackpressure = errors.New("pipeline: backpressure (spool above high-water mark)")
 
+// IsLoggableEmitError reports whether a source should log an emit failure: a
+// genuine error, not shutdown (ctx cancelled) or expected backpressure shedding.
+// Centralized so a new source can't forget the ErrBackpressure exclusion and
+// flood logs whenever the spool is above its high-water mark.
+func IsLoggableEmitError(ctx context.Context, err error) bool {
+	return err != nil && ctx.Err() == nil && !errors.Is(err, ErrBackpressure)
+}
+
 // ErrPermanent marks an export failure that will never succeed for this batch:
 // a malformed or oversized request (4xx / InvalidArgument / ResourceExhausted),
 // as opposed to a transient outage. The retry exporter stops retrying it and the
@@ -103,6 +111,10 @@ func (p *Pipeline) AddExporter(e Exporter)    { p.exporters = append(p.exporters
 func (p *Pipeline) Start(ctx context.Context) error {
 	p.runCtx, p.runCancel = context.WithCancel(ctx)
 	p.setExportCtx(p.runCtx)
+	// Strip discovery meta labels (__meta_*) as the always-last stage, so the core
+	// loop treats it like any other processor instead of special-casing one
+	// source's convention (Prometheus semantics: __meta_* is relabel-only).
+	p.processors = append(p.processors, metaStripper{})
 
 	for i := 0; i < p.cfg.Workers; i++ {
 		p.wg.Add(1)
@@ -213,9 +225,6 @@ func (p *Pipeline) process(ctx context.Context, b model.Batch) error {
 			return nil
 		}
 	}
-	// Discovery meta labels (__meta_*) are available to relabel but must not be
-	// exported - strip them after the processor chain (Prometheus semantics).
-	stripMetaLabels(&b)
 	for _, e := range p.exporters {
 		if err := e.Export(ctx, b); err != nil {
 			p.logger.Error("exporter error", "err", err)
@@ -225,6 +234,16 @@ func (p *Pipeline) process(ctx context.Context, b model.Batch) error {
 }
 
 const metaLabelPrefix = "__meta_"
+
+// metaStripper is the pipeline's always-last processor: it removes discovery meta
+// labels before export. Appended automatically in Start.
+type metaStripper struct{}
+
+func (metaStripper) Process(_ context.Context, b model.Batch) (model.Batch, error) {
+	stripMetaLabels(&b)
+	return b, nil
+}
+func (metaStripper) Close() error { return nil }
 
 // stripMetaLabels removes discovery meta labels (__meta_*) from every series'
 // resource and point attributes before export.
