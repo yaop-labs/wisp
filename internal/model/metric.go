@@ -7,6 +7,7 @@ package model
 
 import (
 	"encoding/binary"
+	"math"
 	"sort"
 	"strings"
 )
@@ -96,6 +97,31 @@ type Point struct {
 	FloatValue   float64
 	IsFloat      bool
 	Hist         *ExpHistogram
+}
+
+// Value returns the point's scalar as a float64, regardless of the int/float
+// storage path.
+func (p Point) Value() float64 {
+	if p.IsFloat {
+		return p.FloatValue
+	}
+	return float64(p.IntValue)
+}
+
+// SetValue writes a fresh scalar, keeping the exact int64 path when v is integral
+// and within range (amber stores integer counters/gauges without a scale factor;
+// see the type doc). Callers that must preserve an existing float point should
+// guard on IsFloat before calling.
+func (p *Point) SetValue(v float64) {
+	if v == math.Trunc(v) && math.Abs(v) < 9.2e18 {
+		p.IntValue = int64(v)
+		p.FloatValue = 0
+		p.IsFloat = false
+		return
+	}
+	p.FloatValue = v
+	p.IntValue = 0
+	p.IsFloat = true
 }
 
 // Series is a metric identity (name + resource + point attributes) plus its

@@ -7,7 +7,6 @@ package reset
 
 import (
 	"context"
-	"math"
 	"sync"
 
 	"github.com/yaop-labs/wisp/internal/model"
@@ -51,7 +50,7 @@ func (p *Processor) Process(_ context.Context, b model.Batch) (model.Batch, erro
 		key := seriesKey(s)
 		for pi := range s.Points {
 			pt := &s.Points[pi]
-			raw := pointValue(pt)
+			raw := pt.Value()
 			st := p.state[key]
 			switch {
 			case st == nil:
@@ -88,23 +87,15 @@ func (p *Processor) Process(_ context.Context, b model.Batch) (model.Batch, erro
 
 func (p *Processor) Close() error { return nil }
 
-func pointValue(p *model.Point) float64 {
-	if p.IsFloat {
-		return p.FloatValue
-	}
-	return float64(p.IntValue)
-}
-
 // setPointValue writes v back, keeping the exact int path when the input was an
-// integer counter and v is still integral (the common case - amber stores int
-// counters without a scale factor).
+// integer counter (amber stores int counters without a scale factor); a float
+// counter stays float.
 func setPointValue(p *model.Point, v float64) {
-	if !p.IsFloat && v == math.Trunc(v) && math.Abs(v) < 9.2e18 {
-		p.IntValue = int64(v)
+	if p.IsFloat {
+		p.FloatValue = v
 		return
 	}
-	p.FloatValue = v
-	p.IsFloat = true
+	p.SetValue(v)
 }
 
 func seriesKey(s *model.Series) string {

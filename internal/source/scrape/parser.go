@@ -122,12 +122,7 @@ func matchingBrace(s string, open int) int {
 func scalarFromLine(name string, attrs model.Labels, v float64, ts uint64, types map[string]string) model.Series {
 	typ, monotonic := sampleType(name, types)
 	p := model.Point{TimeUnixNano: ts}
-	if v == math.Trunc(v) && math.Abs(v) < 9.2e18 {
-		p.IntValue = int64(v)
-	} else {
-		p.FloatValue = v
-		p.IsFloat = true
-	}
+	p.SetValue(v)
 	return model.Series{Name: name, Type: typ, Monotonic: monotonic, Attrs: attrs, Points: []model.Point{p}}
 }
 
