@@ -40,7 +40,7 @@ func run() error {
 		Level: parseLevel(cfg.Agent.LogLevel),
 	}))
 	logger.Info("loaded config", "path", *configPath)
-	logger.Info("sources enabled", "sources", enabledSources(cfg.Sources))
+	logger.Info("sources enabled", "sources", strings.Join(cfg.Sources.Enabled(), ","))
 	logger.Info("egress", "endpoint", cfg.Exporter.OTLP.Endpoint, "protocol", cfg.Exporter.OTLP.Protocol)
 
 	a, err := app.New(cfg, logger)
@@ -91,23 +91,6 @@ func run() error {
 	}
 	logger.Info("wisp stopped")
 	return nil
-}
-
-func enabledSources(s config.SourcesConfig) string {
-	var names []string
-	if s.Host != nil {
-		names = append(names, "host")
-	}
-	if s.Scrape != nil {
-		names = append(names, "scrape")
-	}
-	if s.OTLP != nil {
-		names = append(names, "otlp")
-	}
-	if s.EBPF != nil {
-		names = append(names, "ebpf")
-	}
-	return strings.Join(names, ",")
 }
 
 func parseLevel(s string) slog.Level {

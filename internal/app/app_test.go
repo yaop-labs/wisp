@@ -70,8 +70,8 @@ func TestNewWiresFullAgent(t *testing.T) {
 	if a.scrape == nil {
 		t.Error("scrape source should be captured for hot-reload")
 	}
-	if a.healthy == nil {
-		t.Error("spool present -> healthy func should be set")
+	if len(a.checks) == 0 {
+		t.Error("spool present -> a /healthz check should be registered")
 	}
 }
 

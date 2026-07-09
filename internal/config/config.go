@@ -279,7 +279,25 @@ func validateTLS(c *TLSConfig, where string) error {
 	return nil
 }
 
-// AnyEnabled reports whether at least one source is configured.
-func (s SourcesConfig) AnyEnabled() bool {
-	return s.Host != nil || s.Scrape != nil || s.OTLP != nil || s.EBPF != nil
+// Enabled lists the names of the configured sources, in pipeline order. It is
+// the single place the source set is enumerated (AnyEnabled and startup logging
+// both derive from it).
+func (s SourcesConfig) Enabled() []string {
+	var names []string
+	if s.Host != nil {
+		names = append(names, "host")
+	}
+	if s.Scrape != nil {
+		names = append(names, "scrape")
+	}
+	if s.OTLP != nil {
+		names = append(names, "otlp")
+	}
+	if s.EBPF != nil {
+		names = append(names, "ebpf")
+	}
+	return names
 }
+
+// AnyEnabled reports whether at least one source is configured.
+func (s SourcesConfig) AnyEnabled() bool { return len(s.Enabled()) > 0 }

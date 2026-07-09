@@ -39,9 +39,15 @@ type App struct {
 	selfSrv      *http.Server
 	// scrape, when set, is the hot-reloadable scrape source (see Reload).
 	scrape *scrapesrc.Source
-	// healthy, when set, gates /healthz - false means not-ready (e.g. the
-	// durability spool is failing to persist).
-	healthy func() bool
+	// checks gate /healthz: the endpoint reports 503 with the failing check's
+	// name as soon as any returns an error. Components register their own.
+	checks []healthCheck
+}
+
+// healthCheck is a named readiness probe surfaced on /healthz.
+type healthCheck struct {
+	name  string
+	check func() error
 }
 
 // scrapeConfigFrom builds the scrape source config from the agent config - used
@@ -176,7 +182,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		InitialBackoff: cfg.Exporter.OTLP.Retry.InitialBackoff.Std(),
 		MaxBackoff:     cfg.Exporter.OTLP.Retry.MaxBackoff.Std(),
 	})
-	var healthy func() bool // nil -> always ready; set when the spool is present
+	var checks []healthCheck
 	if cfg.Exporter.Spool.Dir != "" {
 		sp, err := spoolexp.New(exporter, spoolexp.Config{
 			Dir:      cfg.Exporter.Spool.Dir,
@@ -190,7 +196,12 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		// Close the backpressure loop: when the spool crosses its high-water
 		// mark, emit sheds at the source (pull) / returns 429 (push).
 		p.SetPressure(sp.UnderPressure)
-		healthy = sp.Healthy // gate /healthz on durability
+		checks = append(checks, healthCheck{"spool", func() error {
+			if !sp.Healthy() {
+				return fmt.Errorf("durability layer failing")
+			}
+			return nil
+		}}) // gate /healthz on durability
 		selfobs.RegisterGaugeFunc("wisp_spool_bytes", "Current on-disk spool size in bytes.", func() float64 { return float64(sp.Bytes()) })
 		selfobs.RegisterGaugeFunc("wisp_spool_batches", "Current number of batches in the on-disk spool.", func() float64 { return float64(sp.Count()) })
 		selfobs.RegisterGaugeFunc("wisp_backpressure_active", "1 when the spool is above its high-water mark and sources are being shed.", func() float64 {
@@ -203,7 +214,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	}
 	p.AddExporter(exporter)
 
-	return &App{pipeline: p, selfEndpoint: cfg.Agent.SelfMetrics.Endpoint, logger: logger, scrape: scrapeSrc, healthy: healthy}, nil
+	return &App{pipeline: p, selfEndpoint: cfg.Agent.SelfMetrics.Endpoint, logger: logger, scrape: scrapeSrc, checks: checks}, nil
 }
 
 // Reload applies a new config to the running agent without a restart. Only the
@@ -249,9 +260,11 @@ func (a *App) startSelfMetrics(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", selfobs.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		if a.healthy != nil && !a.healthy() {
-			http.Error(w, "spool unhealthy: durability layer failing", http.StatusServiceUnavailable)
-			return
+		for _, c := range a.checks {
+			if err := c.check(); err != nil {
+				http.Error(w, c.name+" unhealthy: "+err.Error(), http.StatusServiceUnavailable)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusOK)
 	})
