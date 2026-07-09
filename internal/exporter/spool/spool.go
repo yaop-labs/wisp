@@ -280,7 +280,9 @@ func (e *Exporter) removeFile(path string, size int64, counter *selfobs.Counter)
 // ensureRoom drops oldest batches until data of size need fits within maxBytes.
 // Caller holds e.mu. maxBytes <= 0 means unbounded.
 func (e *Exporter) ensureRoom(need int64) {
-	if e.maxBytes <= 0 {
+	// Common path: the cached depth already leaves room, so skip the directory
+	// listing entirely (this runs under e.mu on every enqueue).
+	if e.maxBytes <= 0 || e.curBytes.Load()+need <= e.maxBytes {
 		return
 	}
 	files := e.sortedFiles()

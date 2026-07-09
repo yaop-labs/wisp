@@ -32,6 +32,11 @@ type compiledRule struct {
 	target      string
 	replacement string
 	action      string
+	// targetLiteral/replLiteral record that the template has no "$" reference, so
+	// apply can skip the ExpandString (and its allocation) for the common case of
+	// a fixed label name / literal replacement.
+	targetLiteral bool
+	replLiteral   bool
 }
 
 // Processor applies an ordered list of relabel rules.
@@ -67,7 +72,11 @@ func New(rules []Rule) (*Processor, error) {
 		default:
 			return nil, fmt.Errorf("relabel rule %d: unsupported action %q", i, action)
 		}
-		compiled = append(compiled, compiledRule{r.SourceLabels, sep, re, r.TargetLabel, repl, action})
+		compiled = append(compiled, compiledRule{
+			source: r.SourceLabels, sep: sep, re: re, target: r.TargetLabel, replacement: repl, action: action,
+			targetLiteral: !strings.Contains(r.TargetLabel, "$"),
+			replLiteral:   !strings.Contains(repl, "$"),
+		})
 	}
 	return &Processor{rules: compiled}, nil
 }
@@ -103,11 +112,17 @@ func (p *Processor) apply(s *model.Series) bool {
 			if idx == nil {
 				continue
 			}
-			target := string(r.re.ExpandString(nil, r.target, v, idx))
+			target := r.target
+			if !r.targetLiteral {
+				target = string(r.re.ExpandString(nil, r.target, v, idx))
+			}
 			if target == "" {
 				continue
 			}
-			repl := string(r.re.ExpandString(nil, r.replacement, v, idx))
+			repl := r.replacement
+			if !r.replLiteral {
+				repl = string(r.re.ExpandString(nil, r.replacement, v, idx))
+			}
 			if repl == "" {
 				removeLabel(s, target)
 				continue

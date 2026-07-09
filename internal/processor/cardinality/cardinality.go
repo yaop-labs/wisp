@@ -50,6 +50,13 @@ func (p *Processor) Process(_ context.Context, b model.Batch) (model.Batch, erro
 	defer p.mu.Unlock()
 
 	out := make([]model.Series, 0, len(b.Series))
+	// All series of one target share the same Resource slice, so memoize its key
+	// by slice identity instead of recomputing CanonicalKey per series.
+	var (
+		lastResource model.Labels
+		lastRK       string
+		haveLast     bool
+	)
 	for _, s := range b.Series {
 		// Label-count guard: drop label-set explosions amber would reject anyway.
 		if p.maxLabels > 0 && len(s.Resource)+len(s.Attrs) > p.maxLabels {
@@ -60,7 +67,13 @@ func (p *Processor) Process(_ context.Context, b model.Batch) (model.Batch, erro
 			out = append(out, s)
 			continue
 		}
-		rk := model.CanonicalKey(s.Resource)
+		var rk string
+		if haveLast && sameSlice(lastResource, s.Resource) {
+			rk = lastRK
+		} else {
+			rk = model.CanonicalKey(s.Resource)
+			lastResource, lastRK, haveLast = s.Resource, rk, true
+		}
 		set := p.seen[rk]
 		fp := seriesKey(s.Name, s.Attrs)
 		if set != nil {
@@ -96,4 +109,10 @@ func (p *Processor) Close() error { return nil }
 
 func seriesKey(name string, attrs model.Labels) string {
 	return name + "\x00" + model.CanonicalKey(attrs)
+}
+
+// sameSlice reports whether a and b are the same slice (shared backing array and
+// length), used to reuse a memoized resource key across a target's series.
+func sameSlice(a, b model.Labels) bool {
+	return len(a) == len(b) && (len(a) == 0 || &a[0] == &b[0])
 }
