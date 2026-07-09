@@ -112,40 +112,59 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	p := pipeline.New(pipeline.Config{}, logger)
 	resource := buildResource(cfg.Resource, logger)
 
-	if cfg.Sources.Host != nil {
-		hc := cfg.Sources.Host
-		p.AddSource(hostsrc.New(hc.Interval.Std(), hc.Collectors, resource, logger))
-		logger.Info("host source enabled", "interval", hc.Interval.Std())
-	}
+	// Source registry: one entry per source type (name for logs, presence gate,
+	// and constructor). Adding a source is one entry here plus its config field
+	// and config.SourcesConfig.Enabled - not scattered if-blocks.
 	var scrapeSrc *scrapesrc.Source
-	if cfg.Sources.Scrape != nil {
-		sc := cfg.Sources.Scrape
-		scrapeSrc = scrapesrc.New(scrapeConfigFrom(sc), logger)
-		p.AddSource(scrapeSrc)
-		logger.Info("scrape source enabled", "interval", sc.Interval.Std(), "targets", len(sc.Targets), "file_sd_globs", len(sc.FileSD))
+	registry := []struct {
+		name    string
+		present bool
+		build   func() (pipeline.Source, error)
+	}{
+		{"host", cfg.Sources.Host != nil, func() (pipeline.Source, error) {
+			hc := cfg.Sources.Host
+			logger.Info("host source enabled", "interval", hc.Interval.Std())
+			return hostsrc.New(hc.Interval.Std(), hc.Collectors, resource, logger), nil
+		}},
+		{"scrape", cfg.Sources.Scrape != nil, func() (pipeline.Source, error) {
+			sc := cfg.Sources.Scrape
+			scrapeSrc = scrapesrc.New(scrapeConfigFrom(sc), logger) // captured for hot-reload
+			logger.Info("scrape source enabled", "interval", sc.Interval.Std(), "targets", len(sc.Targets), "file_sd_globs", len(sc.FileSD))
+			return scrapeSrc, nil
+		}},
+		{"otlp", cfg.Sources.OTLP != nil, func() (pipeline.Source, error) {
+			oc := cfg.Sources.OTLP
+			recvTLS, err := serverTLS(oc.TLS)
+			if err != nil {
+				return nil, fmt.Errorf("receiver tls: %w", err)
+			}
+			var apiKeys []string
+			if oc.Auth != nil {
+				apiKeys = oc.Auth.APIKeys
+			}
+			logger.Info("otlp receive source enabled",
+				"grpc", oc.GRPC, "http", oc.HTTP,
+				"tls", recvTLS != nil, "mtls", oc.TLS != nil && oc.TLS.ClientCAFile != "",
+				"auth", len(apiKeys) > 0)
+			return otlprecv.New(otlprecv.Options{
+				GRPCAddr: oc.GRPC, HTTPAddr: oc.HTTP, TLS: recvTLS, APIKeys: apiKeys,
+			}, logger), nil
+		}},
+		{"ebpf", cfg.Sources.EBPF != nil, func() (pipeline.Source, error) {
+			ok, reason := ebpfsrc.Available()
+			logger.Info("ebpf source configured", "available", ok, "reason", reason, "probes", cfg.Sources.EBPF.Probes)
+			return ebpfsrc.New(ebpfsrc.Config{Probes: cfg.Sources.EBPF.Probes}, logger), nil
+		}},
 	}
-	if cfg.Sources.OTLP != nil {
-		oc := cfg.Sources.OTLP
-		recvTLS, err := serverTLS(oc.TLS)
+	for _, s := range registry {
+		if !s.present {
+			continue
+		}
+		src, err := s.build()
 		if err != nil {
-			return nil, fmt.Errorf("otlp receiver tls: %w", err)
+			return nil, fmt.Errorf("source %s: %w", s.name, err)
 		}
-		var apiKeys []string
-		if oc.Auth != nil {
-			apiKeys = oc.Auth.APIKeys
-		}
-		p.AddSource(otlprecv.New(otlprecv.Options{
-			GRPCAddr: oc.GRPC, HTTPAddr: oc.HTTP, TLS: recvTLS, APIKeys: apiKeys,
-		}, logger))
-		logger.Info("otlp receive source enabled",
-			"grpc", oc.GRPC, "http", oc.HTTP,
-			"tls", recvTLS != nil, "mtls", oc.TLS != nil && oc.TLS.ClientCAFile != "",
-			"auth", len(apiKeys) > 0)
-	}
-	if cfg.Sources.EBPF != nil {
-		p.AddSource(ebpfsrc.New(ebpfsrc.Config{Probes: cfg.Sources.EBPF.Probes}, logger))
-		ok, reason := ebpfsrc.Available()
-		logger.Info("ebpf source configured", "available", ok, "reason", reason, "probes", cfg.Sources.EBPF.Probes)
+		p.AddSource(src)
 	}
 	for _, pc := range cfg.Processors {
 		pr, ok, err := buildProcessor(pc, logger)
