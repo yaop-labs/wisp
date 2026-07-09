@@ -17,57 +17,44 @@ func (c *Counter) Inc()         { c.v.Add(1) }
 func (c *Counter) Add(n uint64) { c.v.Add(n) }
 func (c *Counter) Get() uint64  { return c.v.Load() }
 
-// Agent self-metrics, incremented from the collection and export paths.
-var (
-	HostCollections      = &Counter{} // wisp_host_collections_total
-	SamplesEmitted       = &Counter{} // wisp_samples_emitted_total
-	BatchesExported      = &Counter{} // wisp_batches_exported_total
-	ExportFailures       = &Counter{} // wisp_export_failures_total
-	ScrapeErrors         = &Counter{} // wisp_scrape_errors_total
-	CardinalityDropped   = &Counter{} // wisp_cardinality_dropped_total
-	CardinalityUntracked = &Counter{} // wisp_cardinality_untracked_total
-	LabelLimitDropped    = &Counter{} // wisp_label_limit_dropped_total
-	ResetUntracked       = &Counter{} // wisp_reset_untracked_total
-	ResetReordered       = &Counter{} // wisp_reset_reordered_total
-	SpoolEnqueued        = &Counter{} // wisp_spool_enqueued_total
-	SpoolDrained         = &Counter{} // wisp_spool_drained_total
-	SpoolDropped         = &Counter{} // wisp_spool_dropped_total
-	SpoolQuarantined     = &Counter{} // wisp_spool_quarantined_total
-	SpoolCorrupt         = &Counter{} // wisp_spool_corrupt_total
-	SpoolExpired         = &Counter{} // wisp_spool_expired_total
-	SpoolWriteErrors     = &Counter{} // wisp_spool_write_errors_total
-	BackpressureShed     = &Counter{} // wisp_backpressure_shed_total
-	OTLPReceived         = &Counter{} // wisp_otlp_received_total
-	OTLPUnsupported      = &Counter{} // wisp_otlp_unsupported_total
-)
-
 type metric struct {
 	name, help string
 	c          *Counter
 }
 
-var registry = []metric{
-	{"wisp_host_collections_total", "Host metric collection cycles completed.", HostCollections},
-	{"wisp_samples_emitted_total", "Data points emitted by sources into the pipeline.", SamplesEmitted},
-	{"wisp_batches_exported_total", "Batches successfully shipped by an exporter.", BatchesExported},
-	{"wisp_export_failures_total", "Export attempts that returned an error.", ExportFailures},
-	{"wisp_scrape_errors_total", "Scrape attempts that failed (fetch or parse).", ScrapeErrors},
-	{"wisp_cardinality_dropped_total", "Series dropped by the per-target cardinality budget.", CardinalityDropped},
-	{"wisp_cardinality_untracked_total", "New series admitted un-budgeted because the cardinality tracker is at capacity.", CardinalityUntracked},
-	{"wisp_label_limit_dropped_total", "Series dropped because they exceeded max_labels_per_series.", LabelLimitDropped},
-	{"wisp_reset_untracked_total", "Counter points not reset-normalized because the reset tracker is at capacity.", ResetUntracked},
-	{"wisp_reset_reordered_total", "Counter points seen out of order (older timestamp than the series' last processed point); passed through without reset detection to avoid spurious inflation.", ResetReordered},
-	{"wisp_spool_enqueued_total", "Batches written to the on-disk spool after export failure.", SpoolEnqueued},
-	{"wisp_spool_drained_total", "Spooled batches successfully re-sent.", SpoolDrained},
-	{"wisp_spool_dropped_total", "Spooled batches dropped because the spool was full.", SpoolDropped},
-	{"wisp_spool_quarantined_total", "Spooled batches discarded on drain because downstream rejected them permanently (malformed/oversized).", SpoolQuarantined},
-	{"wisp_spool_corrupt_total", "Spooled files dropped on drain because they could not be decoded (torn by a crash mid-write, or bit-rot).", SpoolCorrupt},
-	{"wisp_spool_expired_total", "Spooled batches dropped because they exceeded max_age.", SpoolExpired},
-	{"wisp_spool_write_errors_total", "Spool persistence failures (durability layer I/O errors).", SpoolWriteErrors},
-	{"wisp_backpressure_shed_total", "Data points shed at the source because the spool crossed its high-water mark.", BackpressureShed},
-	{"wisp_otlp_received_total", "Data points received over the OTLP receiver.", OTLPReceived},
-	{"wisp_otlp_unsupported_total", "Received OTLP points dropped (explicit Histogram / Summary shapes are not modeled; send exponential histograms).", OTLPUnsupported},
+var registry []metric
+
+// newCounter creates a counter and registers it for the /metrics endpoint in one
+// step, so a counter can't exist without being exposed (or be listed twice).
+func newCounter(name, help string) *Counter {
+	c := &Counter{}
+	registry = append(registry, metric{name, help, c})
+	return c
 }
+
+// Agent self-metrics, incremented from the collection and export paths.
+var (
+	HostCollections      = newCounter("wisp_host_collections_total", "Host metric collection cycles completed.")
+	SamplesEmitted       = newCounter("wisp_samples_emitted_total", "Data points emitted by sources into the pipeline.")
+	BatchesExported      = newCounter("wisp_batches_exported_total", "Batches successfully shipped by an exporter.")
+	ExportFailures       = newCounter("wisp_export_failures_total", "Export attempts that returned an error.")
+	ScrapeErrors         = newCounter("wisp_scrape_errors_total", "Scrape attempts that failed (fetch or parse).")
+	CardinalityDropped   = newCounter("wisp_cardinality_dropped_total", "Series dropped by the per-target cardinality budget.")
+	CardinalityUntracked = newCounter("wisp_cardinality_untracked_total", "New series admitted un-budgeted because the cardinality tracker is at capacity.")
+	LabelLimitDropped    = newCounter("wisp_label_limit_dropped_total", "Series dropped because they exceeded max_labels_per_series.")
+	ResetUntracked       = newCounter("wisp_reset_untracked_total", "Counter points not reset-normalized because the reset tracker is at capacity.")
+	ResetReordered       = newCounter("wisp_reset_reordered_total", "Counter points seen out of order (older timestamp than the series' last processed point); passed through without reset detection to avoid spurious inflation.")
+	SpoolEnqueued        = newCounter("wisp_spool_enqueued_total", "Batches written to the on-disk spool after export failure.")
+	SpoolDrained         = newCounter("wisp_spool_drained_total", "Spooled batches successfully re-sent.")
+	SpoolDropped         = newCounter("wisp_spool_dropped_total", "Spooled batches dropped because the spool was full.")
+	SpoolQuarantined     = newCounter("wisp_spool_quarantined_total", "Spooled batches discarded on drain because downstream rejected them permanently (malformed/oversized).")
+	SpoolCorrupt         = newCounter("wisp_spool_corrupt_total", "Spooled files dropped on drain because they could not be decoded (torn by a crash mid-write, or bit-rot).")
+	SpoolExpired         = newCounter("wisp_spool_expired_total", "Spooled batches dropped because they exceeded max_age.")
+	SpoolWriteErrors     = newCounter("wisp_spool_write_errors_total", "Spool persistence failures (durability layer I/O errors).")
+	BackpressureShed     = newCounter("wisp_backpressure_shed_total", "Data points shed at the source because the spool crossed its high-water mark.")
+	OTLPReceived         = newCounter("wisp_otlp_received_total", "Data points received over the OTLP receiver.")
+	OTLPUnsupported      = newCounter("wisp_otlp_unsupported_total", "Received OTLP points dropped (explicit Histogram / Summary shapes are not modeled; send exponential histograms).")
+)
 
 // gaugeFunc is a gauge whose current value is read from fn at scrape time.
 type gaugeFunc struct {

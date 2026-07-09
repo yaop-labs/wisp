@@ -69,10 +69,6 @@ type Pipeline struct {
 	// pressure, when set and returning true, makes emit shed batches at the
 	// source instead of admitting them. Wired to the spool's high-water mark.
 	pressure func() bool
-
-	batchesIn      atomic.Uint64
-	batchesDropped atomic.Uint64
-	pointsOut      atomic.Uint64
 }
 
 // SetPressure wires a backpressure signal (e.g. the spool's UnderPressure) that
@@ -121,7 +117,6 @@ func (p *Pipeline) Start(ctx context.Context) error {
 			selfobs.BackpressureShed.Add(uint64(b.Len()))
 			return ErrBackpressure
 		}
-		p.batchesIn.Add(1)
 		select {
 		case p.in <- b:
 			// Count points as emitted only once they are actually admitted to the
@@ -130,7 +125,6 @@ func (p *Pipeline) Start(ctx context.Context) error {
 			selfobs.SamplesEmitted.Add(uint64(b.Len()))
 			return nil
 		case <-ctx.Done():
-			p.batchesDropped.Add(1)
 			return ctx.Err()
 		}
 	}
@@ -227,13 +221,7 @@ func (p *Pipeline) process(ctx context.Context, b model.Batch) error {
 			p.logger.Error("exporter error", "err", err)
 		}
 	}
-	p.pointsOut.Add(uint64(b.Len()))
 	return nil
-}
-
-// Stats returns pipeline counters for observability.
-func (p *Pipeline) Stats() (batchesIn, batchesDropped, pointsOut uint64) {
-	return p.batchesIn.Load(), p.batchesDropped.Load(), p.pointsOut.Load()
 }
 
 const metaLabelPrefix = "__meta_"

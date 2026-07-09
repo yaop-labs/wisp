@@ -52,7 +52,7 @@ func (passProcessor) Close() error                                              
 
 func logger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-func TestPipelineEndToEndAndStats(t *testing.T) {
+func TestPipelineEndToEnd(t *testing.T) {
 	src := &captureSource{emitCh: make(chan func(context.Context, model.Batch) error, 1)}
 	exp := &recordExporter{}
 	p := New(Config{Workers: 2, QueueSize: 16}, logger())
@@ -78,11 +78,6 @@ func TestPipelineEndToEndAndStats(t *testing.T) {
 	}
 	if pts, _ := exp.snapshot(); pts != oneBatch.Len() {
 		t.Fatalf("exporter got %d points, want %d", pts, oneBatch.Len())
-	}
-
-	in, dropped, out := p.Stats()
-	if in == 0 || out == 0 || dropped != 0 {
-		t.Errorf("stats in=%d dropped=%d out=%d, want in>0 out>0 dropped=0", in, dropped, out)
 	}
 
 	cancel()

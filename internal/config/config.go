@@ -64,6 +64,7 @@ type HostSource struct {
 // ScrapeSource configures Prometheus/OpenMetrics pull scraping.
 type ScrapeSource struct {
 	Interval Duration       `yaml:"interval"`
+	Timeout  Duration       `yaml:"timeout"` // per-scrape HTTP timeout; defaults to interval
 	Targets  []ScrapeTarget `yaml:"targets"`
 	FileSD   []FileSDConfig `yaml:"file_sd"`
 	DNSSD    []DNSSDConfig  `yaml:"dns_sd"`

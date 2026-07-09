@@ -63,7 +63,7 @@ func scrapeConfigFrom(sc *config.ScrapeSource) scrapesrc.Config {
 	for _, k := range sc.KubeSD {
 		kubeSD = append(kubeSD, scrapesrc.KubernetesSD{Job: k.Job, Namespace: k.Namespace, Port: k.Port})
 	}
-	return scrapesrc.Config{Interval: sc.Interval.Std(), Static: jobs, FileSD: globs, DNSSD: dnsSD, KubeSD: kubeSD}
+	return scrapesrc.Config{Interval: sc.Interval.Std(), Timeout: sc.Timeout.Std(), Static: jobs, FileSD: globs, DNSSD: dnsSD, KubeSD: kubeSD}
 }
 
 // tlsSettings maps the YAML TLS config onto the transport-agnostic Settings.
