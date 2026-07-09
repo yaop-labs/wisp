@@ -1,52 +1,16 @@
 package tlsconfig
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
-	"math/big"
-	"os"
 	"path/filepath"
 	"testing"
-	"time"
+
+	"github.com/yaop-labs/wisp/internal/tlstest"
 )
 
-// writeCertAndCA mints a self-signed cert+key and a separate CA PEM in a temp
-// dir, returning their paths.
-func writeCertAndCA(t *testing.T) (certFile, keyFile, caFile string) {
-	t.Helper()
-	dir := t.TempDir()
-	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "test"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		IsCA:                  true,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
-		BasicConstraintsValid: true,
-	}
-	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	keyDER, _ := x509.MarshalECPrivateKey(key)
-	write := func(name string, b []byte) string {
-		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, b, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return p
-	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	return write("c.crt", certPEM),
-		write("c.key", pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
-		write("ca.crt", certPEM)
-}
-
 func TestClientConfig(t *testing.T) {
-	cert, key, ca := writeCertAndCA(t)
+	cp := tlstest.Generate(t)
+	cert, key, ca := cp.ServerCert, cp.ServerKey, cp.CA
 
 	// CA + server name only (server auth).
 	c, err := Client(Settings{CAFile: ca, ServerName: "host"})
@@ -78,7 +42,8 @@ func TestClientConfig(t *testing.T) {
 }
 
 func TestServerConfig(t *testing.T) {
-	cert, key, ca := writeCertAndCA(t)
+	cp := tlstest.Generate(t)
+	cert, key, ca := cp.ServerCert, cp.ServerKey, cp.CA
 
 	s, err := Server(Settings{CertFile: cert, KeyFile: key})
 	if err != nil {
