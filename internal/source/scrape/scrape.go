@@ -301,7 +301,7 @@ func (s *Source) fetch(ctx context.Context, tg Target) ([]model.Series, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parse(string(body), uint64(time.Now().UnixNano())), nil
+	return parse(body, uint64(time.Now().UnixNano())), nil
 }
 
 // fileSDGroup is the Prometheus file_sd JSON entry.

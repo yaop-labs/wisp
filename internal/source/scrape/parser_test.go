@@ -49,7 +49,7 @@ func find(series []model.Series, name string, attrs map[string]string) *model.Se
 
 func TestParseLabelValueWithBrace(t *testing.T) {
 	// A label value containing '}' must not terminate the label block early.
-	series := parse(`http_requests_total{path="/a}b",code="200"} 5`, 1)
+	series := parse([]byte(`http_requests_total{path="/a}b",code="200"} 5`), 1)
 	if len(series) != 1 {
 		t.Fatalf("parsed %d series, want 1", len(series))
 	}
@@ -71,7 +71,7 @@ func TestParseLabelValueWithBrace(t *testing.T) {
 func TestParseTabSeparatedLabelless(t *testing.T) {
 	// A label-less sample separated by a tab (valid Prometheus) must parse, not
 	// be silently dropped.
-	series := parse("go_goroutines\t42", 1)
+	series := parse([]byte("go_goroutines\t42"), 1)
 	s := find(series, "go_goroutines", nil)
 	if s == nil {
 		t.Fatal("tab-separated label-less line was dropped")
@@ -91,7 +91,7 @@ http_latency_count{path="/a"} 3
 http_latency_bucket{path="/b",le="0.1"} 5
 http_latency_bucket{path="/b",le="+Inf"} 9
 http_latency_count{path="/b"} 9`
-	series := parse(text, 1)
+	series := parse([]byte(text), 1)
 
 	var a, b *model.Series
 	for i := range series {
@@ -116,6 +116,26 @@ http_latency_count{path="/b"} 9`
 	}
 }
 
+func TestParseCopiesRetainedStrings(t *testing.T) {
+	// The parser must copy the strings it keeps (metric/label names and values)
+	// off the input, so the scrape body isn't kept alive by them. Scribble over
+	// the buffer after parsing: aliased strings would change; copies won't.
+	body := []byte(`metric_name{label="value"} 1`)
+	series := parse(body, 1)
+	for i := range body {
+		body[i] = 'X'
+	}
+	if len(series) != 1 {
+		t.Fatalf("got %d series, want 1", len(series))
+	}
+	if series[0].Name != "metric_name" {
+		t.Errorf("metric name aliases the input buffer: %q", series[0].Name)
+	}
+	if v := labelValue(series[0].Attrs, "label"); v != "value" {
+		t.Errorf("label value aliases the input buffer: %q", v)
+	}
+}
+
 func TestMatchingBrace(t *testing.T) {
 	cases := []struct {
 		line string
@@ -128,14 +148,14 @@ func TestMatchingBrace(t *testing.T) {
 	}
 	for _, c := range cases {
 		open := 1 // position of '{' in each case
-		if got := matchingBrace(c.line, open); got != c.want {
+		if got := matchingBrace([]byte(c.line), open); got != c.want {
 			t.Errorf("matchingBrace(%q) = %d, want %d", c.line, got, c.want)
 		}
 	}
 }
 
 func TestParse(t *testing.T) {
-	series := parse(sample, 42)
+	series := parse([]byte(sample), 42)
 
 	// NaN and +Inf lines are dropped.
 	if find(series, "nan_dropped", nil) != nil || find(series, "inf_dropped", nil) != nil {
@@ -187,7 +207,7 @@ request_duration_seconds_sum{method="get"} 4.2
 `
 
 func TestParseReassemblesHistogram(t *testing.T) {
-	series := parse(histExposition, 7)
+	series := parse([]byte(histExposition), 7)
 
 	// The _bucket/_count/_sum lines must NOT appear as scalar series.
 	for _, s := range series {

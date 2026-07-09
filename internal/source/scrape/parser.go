@@ -1,6 +1,7 @@
 package scrape
 
 import (
+	"bytes"
 	"math"
 	"strconv"
 	"strings"
@@ -17,21 +18,25 @@ import (
 // NaN and +/-Inf samples are dropped: amber rejects them as unencodable in the
 // int64 value model (see the wisp/coral/amber metric contract). defaultTS (unix nanos) is used when
 // a line omits a timestamp.
-func parse(text string, defaultTS uint64) []model.Series {
+//
+// The exposition is parsed as []byte and only the strings that are retained in
+// the output (metric and label names/values) are copied, so the (up to 64MiB)
+// scrape body is neither copied up front nor kept alive by a few small labels.
+func parse(text []byte, defaultTS uint64) []model.Series {
 	types := make(map[string]string)
 	var scalars []model.Series
 	hist := make(map[string]*histAccum)
 	var hc histCache
 
-	for line := range strings.SplitSeq(text, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	for line := range bytes.SplitSeq(text, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
 			continue
 		}
 		if line[0] == '#' {
-			f := strings.Fields(line)
-			if len(f) >= 4 && f[1] == "TYPE" {
-				types[f[2]] = f[3]
+			f := bytes.Fields(line)
+			if len(f) >= 4 && string(f[1]) == "TYPE" {
+				types[string(f[2])] = string(f[3])
 			}
 			continue
 		}
@@ -55,10 +60,10 @@ func parse(text string, defaultTS uint64) []model.Series {
 
 // parseLine extracts the raw components of one sample line without deciding its
 // type. ok is false for malformed lines and for NaN/+/-Inf values.
-func parseLine(line string, defaultTS uint64) (name string, attrs model.Labels, value float64, ts uint64, ok bool) {
-	var rest string
-	if i := strings.IndexByte(line, '{'); i >= 0 {
-		name = strings.TrimSpace(line[:i])
+func parseLine(line []byte, defaultTS uint64) (name string, attrs model.Labels, value float64, ts uint64, ok bool) {
+	var rest []byte
+	if i := bytes.IndexByte(line, '{'); i >= 0 {
+		name = string(bytes.TrimSpace(line[:i])) // retained: copy off the buffer
 		// Find the closing brace that is outside any quoted label value, so a
 		// value like path="/a}b" doesn't terminate the label block early.
 		closeIdx := matchingBrace(line, i)
@@ -66,31 +71,31 @@ func parseLine(line string, defaultTS uint64) (name string, attrs model.Labels, 
 			return "", nil, 0, 0, false
 		}
 		attrs = parseLabels(line[i+1 : closeIdx])
-		rest = strings.TrimSpace(line[closeIdx+1:])
+		rest = bytes.TrimSpace(line[closeIdx+1:])
 	} else {
 		// Split on the first space OR tab: the tab is a valid Prometheus name/value
 		// separator, and a Cut on " " alone silently drops tab-separated samples.
-		i := strings.IndexAny(line, " \t")
+		i := bytes.IndexAny(line, " \t")
 		if i < 0 {
 			return "", nil, 0, 0, false
 		}
-		name = strings.TrimSpace(line[:i])
-		rest = strings.TrimSpace(line[i+1:])
+		name = string(bytes.TrimSpace(line[:i])) // retained: copy off the buffer
+		rest = bytes.TrimSpace(line[i+1:])
 	}
 	if name == "" {
 		return "", nil, 0, 0, false
 	}
-	f := strings.Fields(rest)
+	f := bytes.Fields(rest)
 	if len(f) == 0 {
 		return "", nil, 0, 0, false
 	}
-	v, err := strconv.ParseFloat(f[0], 64)
+	v, err := strconv.ParseFloat(string(f[0]), 64)
 	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 		return "", nil, 0, 0, false
 	}
 	ts = defaultTS
 	if len(f) >= 2 {
-		if ms, err := strconv.ParseInt(f[1], 10, 64); err == nil {
+		if ms, err := strconv.ParseInt(string(f[1]), 10, 64); err == nil {
 			ts = uint64(ms) * 1_000_000
 		}
 	}
@@ -100,7 +105,7 @@ func parseLine(line string, defaultTS uint64) (name string, attrs model.Labels, 
 // matchingBrace returns the index of the '}' that closes the label block opened
 // at index open, ignoring '}' that appears inside a quoted label value (with \
 // escapes). Returns -1 if no closing brace is found.
-func matchingBrace(s string, open int) int {
+func matchingBrace(s []byte, open int) int {
 	inQuote := false
 	for j := open + 1; j < len(s); j++ {
 		switch s[j] {
@@ -224,18 +229,18 @@ func accumulateHist(hist map[string]*histAccum, c *histCache, base, comp string,
 // parseLabels parses `a="x",b="y"` honoring \\, \" and \n escapes. The common
 // (no-escape) value is sliced from s directly to avoid a per-value allocation;
 // only escaped values are rebuilt. out is pre-sized from the '=' count.
-func parseLabels(s string) model.Labels {
-	out := make(model.Labels, 0, strings.Count(s, "="))
+func parseLabels(s []byte) model.Labels {
+	out := make(model.Labels, 0, bytes.Count(s, []byte("=")))
 	i := 0
 	for i < len(s) {
 		for i < len(s) && (s[i] == ' ' || s[i] == ',') {
 			i++
 		}
-		eq := strings.IndexByte(s[i:], '=')
+		eq := bytes.IndexByte(s[i:], '=')
 		if eq < 0 {
 			break
 		}
-		name := strings.TrimSpace(s[i : i+eq])
+		name := string(bytes.TrimSpace(s[i : i+eq])) // retained: copy off the buffer
 		i += eq + 1
 		if i >= len(s) || s[i] != '"' {
 			break
@@ -262,7 +267,7 @@ func parseLabels(s string) model.Labels {
 		if name == "" {
 			continue
 		}
-		value := raw
+		value := string(raw) // retained: copy off the buffer
 		if escaped {
 			value = unescapeLabelValue(raw)
 		}
@@ -273,7 +278,7 @@ func parseLabels(s string) model.Labels {
 
 // unescapeLabelValue resolves \\, \" and \n in a label value (slow path; only
 // called when the value actually contains a backslash).
-func unescapeLabelValue(s string) string {
+func unescapeLabelValue(s []byte) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for i := 0; i < len(s); i++ {
