@@ -33,6 +33,22 @@ func TestCanonicalKeyOrderIndependentAndInjectionSafe(t *testing.T) {
 	}
 }
 
+func BenchmarkCanonicalKeySorted(b *testing.B) {
+	ls := Labels{{Name: "a", Value: "1"}, {Name: "b", Value: "2"}, {Name: "c", Value: "3"}, {Name: "d", Value: "4"}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = CanonicalKey(ls)
+	}
+}
+
+func BenchmarkCanonicalKeyUnsorted(b *testing.B) {
+	ls := Labels{{Name: "d", Value: "4"}, {Name: "b", Value: "2"}, {Name: "a", Value: "1"}, {Name: "c", Value: "3"}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = CanonicalKey(ls)
+	}
+}
+
 func TestMetricTypeString(t *testing.T) {
 	cases := map[MetricType]string{
 		MetricGauge:                "gauge",

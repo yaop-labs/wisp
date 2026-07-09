@@ -6,9 +6,10 @@
 package model
 
 import (
+	"cmp"
 	"encoding/binary"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -152,6 +153,14 @@ func (b Batch) Len() int {
 	return n
 }
 
+// compareLabel orders labels by name, then value.
+func compareLabel(a, b Label) int {
+	if c := cmp.Compare(a.Name, b.Name); c != 0 {
+		return c
+	}
+	return cmp.Compare(a.Value, b.Value)
+}
+
 // CanonicalKey renders a label set as a stable string key, independent of input
 // order: labels are sorted by name (then value) and each name/value is written
 // length-prefixed. The length prefixes make the encoding injective, so no
@@ -159,13 +168,13 @@ func (b Batch) Len() int {
 // can forge a delimiter and collide with a different label set. Used wherever a
 // label set needs a map key or identity (series fingerprints, resource grouping).
 func CanonicalKey(labels Labels) string {
-	sorted := append(Labels(nil), labels...)
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].Name == sorted[j].Name {
-			return sorted[i].Value < sorted[j].Value
-		}
-		return sorted[i].Name < sorted[j].Name
-	})
+	// Fast path: label sets that are already sorted (the common case for a series
+	// that hasn't been relabeled) need no copy+sort.
+	sorted := labels
+	if !slices.IsSortedFunc(labels, compareLabel) {
+		sorted = append(Labels(nil), labels...)
+		slices.SortFunc(sorted, compareLabel)
+	}
 	var b strings.Builder
 	var num [binary.MaxVarintLen64]byte
 	writeLenPrefixed := func(s string) {
