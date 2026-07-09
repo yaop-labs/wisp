@@ -2,19 +2,18 @@ package scrape
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/yaop-labs/wisp/internal/httpx"
 	"github.com/yaop-labs/wisp/internal/model"
 	"github.com/yaop-labs/wisp/internal/selfobs"
+	"github.com/yaop-labs/wisp/internal/tlsconfig"
 )
 
 // Kubernetes pod discovery. To keep the agent stdlib-first (no client-go), wisp
@@ -57,20 +56,14 @@ func inClusterClient() (*kubeClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read service account token: %w", err)
 	}
-	caPEM, err := os.ReadFile(saCAFile)
+	tlsCfg, err := tlsconfig.Client(tlsconfig.Settings{CAFile: saCAFile})
 	if err != nil {
-		return nil, fmt.Errorf("read service account CA: %w", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("bad service account CA")
+		return nil, fmt.Errorf("service account CA: %w", err)
 	}
 	return &kubeClient{
 		baseURL: "https://" + net.JoinHostPort(host, port),
 		token:   string(token),
-		http: &http.Client{Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
-		}},
+		http:    &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}},
 	}, nil
 }
 
@@ -114,8 +107,7 @@ func (c *kubeClient) listPods(ctx context.Context, namespace string) (*podList, 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		return nil, fmt.Errorf("api server status %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+		return nil, fmt.Errorf("api server: %w", httpx.ErrorFromResponse(resp))
 	}
 	var pl podList
 	if err := json.NewDecoder(resp.Body).Decode(&pl); err != nil {

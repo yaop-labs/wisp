@@ -35,6 +35,7 @@ import (
 
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 
+	"github.com/yaop-labs/wisp/internal/httpx"
 	"github.com/yaop-labs/wisp/internal/model"
 	"github.com/yaop-labs/wisp/internal/pipeline"
 	"github.com/yaop-labs/wisp/internal/selfobs"
@@ -210,8 +211,7 @@ func (t *httpTransport) send(ctx context.Context, req *colmetricspb.ExportMetric
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		err := fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+		err := httpx.ErrorFromResponse(resp)
 		if permanentHTTP(resp.StatusCode) {
 			return fmt.Errorf("%w: %w", pipeline.ErrPermanent, err)
 		}

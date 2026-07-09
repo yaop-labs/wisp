@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -22,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yaop-labs/wisp/internal/httpx"
 	"github.com/yaop-labs/wisp/internal/model"
 	"github.com/yaop-labs/wisp/internal/pipeline"
 	"github.com/yaop-labs/wisp/internal/selfobs"
@@ -296,7 +296,7 @@ func (s *Source) fetch(ctx context.Context, tg Target) ([]model.Series, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
+		return nil, httpx.ErrorFromResponse(resp)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
