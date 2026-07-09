@@ -21,6 +21,7 @@ func parse(text string, defaultTS uint64) []model.Series {
 	types := make(map[string]string)
 	var scalars []model.Series
 	hist := make(map[string]*histAccum)
+	var hc histCache
 
 	for line := range strings.SplitSeq(text, "\n") {
 		line = strings.TrimSpace(line)
@@ -39,7 +40,7 @@ func parse(text string, defaultTS uint64) []model.Series {
 			continue
 		}
 		if base, comp, isHist := histComponent(name, types); isHist {
-			accumulateHist(hist, base, comp, attrs, value, ts)
+			accumulateHist(hist, &hc, base, comp, attrs, value, ts)
 			continue
 		}
 		scalars = append(scalars, scalarFromLine(name, attrs, value, ts, types))
@@ -158,13 +159,46 @@ func histComponent(name string, types map[string]string) (base, comp string, ok 
 	return "", "", false
 }
 
-func accumulateHist(hist map[string]*histAccum, base, comp string, attrs model.Labels, v float64, ts uint64) {
-	noLe := attrs.Filter(func(name string) bool { return name != "le" })
-	key := base + "\x00" + model.CanonicalKey(noLe)
-	h := hist[key]
-	if h == nil {
-		h = newHistAccum(base, noLe)
-		hist[key] = h
+// histCache remembers the accumulator for the last histogram family seen. A
+// family's _bucket/_count/_sum lines arrive consecutively differing only in le,
+// so this skips re-filtering the labels and rebuilding the CanonicalKey on every
+// line (B+2 times per series instead of once).
+type histCache struct {
+	base string
+	noLe model.Labels
+	h    *histAccum
+}
+
+// labelsEqualIgnoringLe reports whether attrs, minus any "le" label, equals the
+// cached label set (element-wise; both come from the same exposition in a stable
+// order).
+func labelsEqualIgnoringLe(attrs, cached model.Labels) bool {
+	i := 0
+	for _, l := range attrs {
+		if l.Name == "le" {
+			continue
+		}
+		if i >= len(cached) || cached[i] != l {
+			return false
+		}
+		i++
+	}
+	return i == len(cached)
+}
+
+func accumulateHist(hist map[string]*histAccum, c *histCache, base, comp string, attrs model.Labels, v float64, ts uint64) {
+	var h *histAccum
+	if c.h != nil && c.base == base && labelsEqualIgnoringLe(attrs, c.noLe) {
+		h = c.h
+	} else {
+		noLe := attrs.Filter(func(name string) bool { return name != "le" })
+		key := base + "\x00" + model.CanonicalKey(noLe)
+		h = hist[key]
+		if h == nil {
+			h = newHistAccum(base, noLe)
+			hist[key] = h
+		}
+		c.base, c.noLe, c.h = base, noLe, h
 	}
 	h.ts = ts
 	switch comp {

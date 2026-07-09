@@ -81,6 +81,41 @@ func TestParseTabSeparatedLabelless(t *testing.T) {
 	}
 }
 
+func TestParseTwoHistogramSeries(t *testing.T) {
+	// Two families of the same metric with different labels, interleaved by the
+	// caching accumulator: they must not be merged into one series.
+	text := `# TYPE http_latency histogram
+http_latency_bucket{path="/a",le="0.1"} 1
+http_latency_bucket{path="/a",le="+Inf"} 3
+http_latency_count{path="/a"} 3
+http_latency_bucket{path="/b",le="0.1"} 5
+http_latency_bucket{path="/b",le="+Inf"} 9
+http_latency_count{path="/b"} 9`
+	series := parse(text, 1)
+
+	var a, b *model.Series
+	for i := range series {
+		if series[i].Type != model.MetricExponentialHistogram {
+			continue
+		}
+		switch labelValue(series[i].Attrs, "path") {
+		case "/a":
+			a = &series[i]
+		case "/b":
+			b = &series[i]
+		}
+	}
+	if a == nil || b == nil {
+		t.Fatalf("want 2 histogram series (/a,/b), got %d: %+v", len(series), series)
+	}
+	if a.Points[0].Hist.Count != 3 {
+		t.Errorf("/a count = %d, want 3", a.Points[0].Hist.Count)
+	}
+	if b.Points[0].Hist.Count != 9 {
+		t.Errorf("/b count = %d, want 9 (cache must not merge families)", b.Points[0].Hist.Count)
+	}
+}
+
 func TestMatchingBrace(t *testing.T) {
 	cases := []struct {
 		line string
