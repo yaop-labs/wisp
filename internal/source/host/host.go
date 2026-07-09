@@ -71,17 +71,18 @@ func (s *Source) Stop(context.Context) error { return nil }
 func (s *Source) collectAndEmit(ctx context.Context, emit func(context.Context, model.Batch) error) {
 	now := uint64(time.Now().UnixNano())
 	var series []model.Series
-	if s.enabled("load") {
-		series = append(series, s.load(now)...)
-	}
-	if s.enabled("memory") {
-		series = append(series, s.memory(now)...)
-	}
-	if s.enabled("cpu") {
-		series = append(series, s.cpu(now)...)
-	}
-	if s.enabled("network") {
-		series = append(series, s.network(now)...)
+	for _, c := range []struct {
+		name    string
+		collect func(uint64) []model.Series
+	}{
+		{"load", s.load},
+		{"memory", s.memory},
+		{"cpu", s.cpu},
+		{"network", s.network},
+	} {
+		if s.enabled(c.name) {
+			series = append(series, c.collect(now)...)
+		}
 	}
 	for i := range series {
 		series[i].Resource = s.resource

@@ -265,6 +265,18 @@ func syncDir(dir string) error {
 	return d.Close()
 }
 
+// removeFile deletes a spooled file and, on success, decrements the cached depth
+// and bumps counter. Returns whether the file was removed.
+func (e *Exporter) removeFile(path string, size int64, counter *selfobs.Counter) bool {
+	if err := os.Remove(path); err != nil {
+		return false
+	}
+	e.curBytes.Add(-size)
+	e.curCount.Add(-1)
+	counter.Inc()
+	return true
+}
+
 // ensureRoom drops oldest batches until data of size need fits within maxBytes.
 // Caller holds e.mu. maxBytes <= 0 means unbounded.
 func (e *Exporter) ensureRoom(need int64) {
@@ -272,16 +284,10 @@ func (e *Exporter) ensureRoom(need int64) {
 		return
 	}
 	files := e.sortedFiles()
-	total := e.curBytes.Load()
-	for total+need > e.maxBytes && len(files) > 0 {
+	for e.curBytes.Load()+need > e.maxBytes && len(files) > 0 {
 		oldest := files[0]
 		files = files[1:]
-		if err := os.Remove(oldest.path); err == nil {
-			total -= oldest.size
-			e.curBytes.Add(-oldest.size)
-			e.curCount.Add(-1)
-			selfobs.SpoolDropped.Inc()
-		} else {
+		if !e.removeFile(oldest.path, oldest.size, selfobs.SpoolDropped) {
 			break
 		}
 	}
@@ -317,11 +323,7 @@ func (e *Exporter) expireOld() {
 		if !ok || ts >= cutoff {
 			continue // unparseable names are left for drain to handle
 		}
-		if err := os.Remove(f.path); err == nil {
-			e.curBytes.Add(-f.size)
-			e.curCount.Add(-1)
-			selfobs.SpoolExpired.Inc()
-		}
+		e.removeFile(f.path, f.size, selfobs.SpoolExpired)
 	}
 	e.updatePressure()
 }
@@ -351,11 +353,7 @@ func (e *Exporter) drain(ctx context.Context) {
 			// rather than block the queue forever, and count it distinctly from
 			// capacity evictions so operators can see durability damage.
 			e.logger.Warn("spool: dropping undecodable batch", "file", f.path, "err", err)
-			if rmErr := os.Remove(f.path); rmErr == nil {
-				e.curBytes.Add(-f.size)
-				e.curCount.Add(-1)
-				selfobs.SpoolCorrupt.Inc()
-			}
+			e.removeFile(f.path, f.size, selfobs.SpoolCorrupt)
 			continue
 		}
 		if err := e.inner.Export(ctx, b); err != nil {
@@ -364,21 +362,13 @@ func (e *Exporter) drain(ctx context.Context) {
 				// Discard it so it can't wedge the head of the queue forever;
 				// newer batches behind it still get a chance to drain.
 				e.logger.Warn("spool: quarantining permanently-rejected batch", "file", f.path, "err", err)
-				if rmErr := os.Remove(f.path); rmErr == nil {
-					e.curBytes.Add(-f.size)
-					e.curCount.Add(-1)
-					selfobs.SpoolQuarantined.Inc()
-				}
+				e.removeFile(f.path, f.size, selfobs.SpoolQuarantined)
 				continue
 			}
 			e.updatePressure()
 			return // still failing; try again next tick
 		}
-		if rmErr := os.Remove(f.path); rmErr == nil {
-			e.curBytes.Add(-f.size)
-			e.curCount.Add(-1)
-			selfobs.SpoolDrained.Inc()
-		}
+		e.removeFile(f.path, f.size, selfobs.SpoolDrained)
 	}
 	e.updatePressure()
 }
