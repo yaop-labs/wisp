@@ -1,0 +1,67 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  go: "1.26"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - misspell
+    - revive
+    - unconvert
+    - unparam
+    - gocritic
+    - gosec
+    - prealloc
+    - copyloopvar
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+    gosec:
+      excludes:
+        - G104 # errcheck handles this
+        - G115 # intentional in binary encode/decode
+        - G304 # file paths derived from internal layout
+        - G703 # spool paths are built from internal layout (dir + generated name), not user input
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (net/http.ResponseWriter).Write
+        - fmt.Fprintf # only used to write the /metrics response; write errors are unactionable
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/yaop-labs/wisp
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

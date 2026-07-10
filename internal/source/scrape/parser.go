@@ -1,0 +1,302 @@
+package scrape
+
+import (
+	"bytes"
+	"math"
+	"strconv"
+	"strings"
+
+	"github.com/yaop-labs/wisp/internal/model"
+)
+
+// parse turns a Prometheus/OpenMetrics text exposition into series. Scalar
+// metrics (counter/gauge/summary components) become one series per sample line.
+// Classic histogram families (a metric with `# TYPE x histogram` plus its
+// x_bucket/x_count/x_sum lines) are reassembled per label set and converted to
+// a single exponential-histogram series for amber's histogram engine.
+//
+// NaN and +/-Inf samples are dropped: amber rejects them as unencodable in the
+// int64 value model. defaultTS (unix nanos) is used when
+// a line omits a timestamp.
+//
+// The exposition is parsed as []byte and only the strings that are retained in
+// the output (metric and label names/values) are copied, so the (up to 64MiB)
+// scrape body is neither copied up front nor kept alive by a few small labels.
+func parse(text []byte, defaultTS uint64) []model.Series {
+	types := make(map[string]string)
+	var scalars []model.Series
+	hist := make(map[string]*histAccum)
+	var hc histCache
+
+	for line := range bytes.SplitSeq(text, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		if line[0] == '#' {
+			f := bytes.Fields(line)
+			if len(f) >= 4 && string(f[1]) == "TYPE" {
+				types[string(f[2])] = string(f[3])
+			}
+			continue
+		}
+		name, attrs, value, ts, ok := parseLine(line, defaultTS)
+		if !ok {
+			continue
+		}
+		if base, comp, isHist := histComponent(name, types); isHist {
+			accumulateHist(hist, &hc, base, comp, attrs, value, ts)
+			continue
+		}
+		scalars = append(scalars, scalarFromLine(name, attrs, value, ts, types))
+	}
+
+	out := scalars
+	for _, h := range hist {
+		out = append(out, h.series())
+	}
+	return out
+}
+
+// parseLine extracts the raw components of one sample line without deciding its
+// type. ok is false for malformed lines and for NaN/+/-Inf values.
+func parseLine(line []byte, defaultTS uint64) (name string, attrs model.Labels, value float64, ts uint64, ok bool) {
+	var rest []byte
+	if i := bytes.IndexByte(line, '{'); i >= 0 {
+		name = string(bytes.TrimSpace(line[:i])) // retained: copy off the buffer
+		// Find the closing brace that is outside any quoted label value, so a
+		// value like path="/a}b" doesn't terminate the label block early.
+		closeIdx := matchingBrace(line, i)
+		if closeIdx < 0 {
+			return "", nil, 0, 0, false
+		}
+		attrs = parseLabels(line[i+1 : closeIdx])
+		rest = bytes.TrimSpace(line[closeIdx+1:])
+	} else {
+		// Split on the first space OR tab: the tab is a valid Prometheus name/value
+		// separator, and a Cut on " " alone silently drops tab-separated samples.
+		i := bytes.IndexAny(line, " \t")
+		if i < 0 {
+			return "", nil, 0, 0, false
+		}
+		name = string(bytes.TrimSpace(line[:i])) // retained: copy off the buffer
+		rest = bytes.TrimSpace(line[i+1:])
+	}
+	if name == "" {
+		return "", nil, 0, 0, false
+	}
+	f := bytes.Fields(rest)
+	if len(f) == 0 {
+		return "", nil, 0, 0, false
+	}
+	v, err := strconv.ParseFloat(string(f[0]), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return "", nil, 0, 0, false
+	}
+	ts = defaultTS
+	if len(f) >= 2 {
+		if ms, err := strconv.ParseInt(string(f[1]), 10, 64); err == nil {
+			ts = uint64(ms) * 1_000_000
+		}
+	}
+	return name, attrs, v, ts, true
+}
+
+// matchingBrace returns the index of the '}' that closes the label block opened
+// at index open, ignoring '}' that appears inside a quoted label value (with \
+// escapes). Returns -1 if no closing brace is found.
+func matchingBrace(s []byte, open int) int {
+	inQuote := false
+	for j := open + 1; j < len(s); j++ {
+		switch s[j] {
+		case '\\':
+			if inQuote {
+				j++ // skip escaped character
+			}
+		case '"':
+			inQuote = !inQuote
+		case '}':
+			if !inQuote {
+				return j
+			}
+		}
+	}
+	return -1
+}
+
+// scalarFromLine builds a scalar series, shipping integral values as exact int64.
+func scalarFromLine(name string, attrs model.Labels, v float64, ts uint64, types map[string]string) model.Series {
+	typ, monotonic := sampleType(name, types)
+	p := model.Point{TimeUnixNano: ts}
+	p.SetValue(v)
+	return model.Series{Name: name, Type: typ, Monotonic: monotonic, Attrs: attrs, Points: []model.Point{p}}
+}
+
+// sampleType maps a non-histogram metric line to its storage type via # TYPE.
+func sampleType(name string, types map[string]string) (model.MetricType, bool) {
+	switch types[name] {
+	case "counter":
+		return model.MetricSum, true
+	case "gauge", "untyped", "summary": // summary's quantile lines are gauges
+		return model.MetricGauge, false
+	}
+	// Summary _count/_sum components are monotonic counters.
+	for _, suf := range []string{"_count", "_sum"} {
+		if base := strings.TrimSuffix(name, suf); base != name {
+			if types[base] == "summary" {
+				return model.MetricSum, true
+			}
+		}
+	}
+	return model.MetricGauge, false
+}
+
+// histComponent reports whether name is a component of a histogram-typed family
+// and returns the base metric name and component ("bucket"/"count"/"sum").
+func histComponent(name string, types map[string]string) (base, comp string, ok bool) {
+	for _, suf := range []string{"_bucket", "_count", "_sum"} {
+		if b, ok := strings.CutSuffix(name, suf); ok {
+			if types[b] == "histogram" {
+				return b, strings.TrimPrefix(suf, "_"), true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// histCache remembers the accumulator for the last histogram family seen. A
+// family's _bucket/_count/_sum lines arrive consecutively differing only in le,
+// so this skips re-filtering the labels and rebuilding the CanonicalKey on every
+// line (B+2 times per series instead of once).
+type histCache struct {
+	base string
+	noLe model.Labels
+	h    *histAccum
+}
+
+// labelsEqualIgnoringLe reports whether attrs, minus any "le" label, equals the
+// cached label set (element-wise; both come from the same exposition in a stable
+// order).
+func labelsEqualIgnoringLe(attrs, cached model.Labels) bool {
+	i := 0
+	for _, l := range attrs {
+		if l.Name == "le" {
+			continue
+		}
+		if i >= len(cached) || cached[i] != l {
+			return false
+		}
+		i++
+	}
+	return i == len(cached)
+}
+
+func accumulateHist(hist map[string]*histAccum, c *histCache, base, comp string, attrs model.Labels, v float64, ts uint64) {
+	var h *histAccum
+	if c.h != nil && c.base == base && labelsEqualIgnoringLe(attrs, c.noLe) {
+		h = c.h
+	} else {
+		noLe := attrs.Filter(func(name string) bool { return name != "le" })
+		key := base + "\x00" + model.CanonicalKey(noLe)
+		h = hist[key]
+		if h == nil {
+			h = newHistAccum(base, noLe)
+			hist[key] = h
+		}
+		c.base, c.noLe, c.h = base, noLe, h
+	}
+	h.ts = ts
+	switch comp {
+	case "bucket":
+		le := math.Inf(1)
+		if s, ok := attrs.Get("le"); ok {
+			if parsed, err := strconv.ParseFloat(s, 64); err == nil {
+				le = parsed
+			}
+		}
+		if v >= 0 {
+			h.buckets[le] = uint64(v)
+		}
+	case "count":
+		if v >= 0 {
+			h.count = uint64(v)
+		}
+	case "sum":
+		h.sum = v
+	}
+}
+
+// parseLabels parses `a="x",b="y"` honoring \\, \" and \n escapes. The common
+// (no-escape) value is sliced from s directly to avoid a per-value allocation;
+// only escaped values are rebuilt. out is pre-sized from the '=' count.
+func parseLabels(s []byte) model.Labels {
+	out := make(model.Labels, 0, bytes.Count(s, []byte("=")))
+	i := 0
+	for i < len(s) {
+		for i < len(s) && (s[i] == ' ' || s[i] == ',') {
+			i++
+		}
+		eq := bytes.IndexByte(s[i:], '=')
+		if eq < 0 {
+			break
+		}
+		name := string(bytes.TrimSpace(s[i : i+eq])) // retained: copy off the buffer
+		i += eq + 1
+		if i >= len(s) || s[i] != '"' {
+			break
+		}
+		i++
+		valStart := i
+		escaped := false
+		for i < len(s) {
+			c := s[i]
+			if c == '\\' && i+1 < len(s) {
+				escaped = true
+				i += 2
+				continue
+			}
+			if c == '"' {
+				break
+			}
+			i++
+		}
+		raw := s[valStart:i]
+		if i < len(s) {
+			i++ // consume closing quote
+		}
+		if name == "" {
+			continue
+		}
+		value := string(raw) // retained: copy off the buffer
+		if escaped {
+			value = unescapeLabelValue(raw)
+		}
+		out = append(out, model.Label{Name: name, Value: value})
+	}
+	return out
+}
+
+// unescapeLabelValue resolves \\, \" and \n in a label value (slow path; only
+// called when the value actually contains a backslash).
+func unescapeLabelValue(s []byte) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case 'n':
+				b.WriteByte('\n')
+			case '"':
+				b.WriteByte('"')
+			case '\\':
+				b.WriteByte('\\')
+			default:
+				b.WriteByte(s[i+1])
+			}
+			i++
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}

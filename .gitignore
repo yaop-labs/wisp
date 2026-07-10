@@ -30,3 +30,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# wisp runtime: on-disk durability spool (default dir ./wisp-spool) and its
+# gob-encoded batch files — local runtime data, never committed.
+/wisp-spool/
+*.batch
