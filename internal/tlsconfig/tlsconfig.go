@@ -1,6 +1,15 @@
+/*
+/
+/
+https://github.com/yaop-labs/reef --   sec here
+/
+/
+/
+*/
+
 // Package tlsconfig builds *tls.Config for wisp's OTLP transports from agent
 // config. It is transport-agnostic: the same Settings drive the gRPC and HTTP
-// client (exporter) and server (receiver) sides, including mutual TLS.
+// client (exporter) and server (receiver) sides, including mutual TLS
 package tlsconfig
 
 import (

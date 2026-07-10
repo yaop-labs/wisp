@@ -50,7 +50,6 @@ func (c *Config) setDefaults() {
 }
 
 // Pipeline moves metric batches from sources through processors to exporters.
-// Its shape mirrors the collector's trace pipeline.
 type Pipeline struct {
 	cfg        Config
 	sources    []Source

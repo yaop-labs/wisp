@@ -1,5 +1,5 @@
 // Package pipeline defines the source->processor->exporter contracts that move
-// metric batches through wisp. The shapes mirror the collector's trace pipeline.
+// metric batches through wisp.
 package pipeline
 
 import (

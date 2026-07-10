@@ -210,7 +210,7 @@ type SpoolConfig struct {
 }
 
 // ResourceConfig holds resource attributes attached to every series. service.name
-// is required by the contract.
+// is required; amber routes series to the right service by it.
 type ResourceConfig struct {
 	Attributes map[string]string `yaml:"attributes"`
 }
@@ -261,7 +261,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	if _, ok := c.Resource.Attributes["service.name"]; !ok {
-		return fmt.Errorf("resource.attributes.service.name is required (see the wisp/coral/amber metric contract)")
+		return fmt.Errorf("resource.attributes.service.name is required")
 	}
 	return nil
 }

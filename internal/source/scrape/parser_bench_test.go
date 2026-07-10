@@ -13,7 +13,7 @@ func scrapePayload(n int) string {
 	b.WriteString("# HELP http_requests_total Total requests.\n# TYPE http_requests_total counter\n")
 	methods := []string{"get", "post", "put", "delete"}
 	codes := []string{"200", "404", "500"}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		fmt.Fprintf(&b, "http_requests_total{method=%q,code=%q,handler=\"/api/v%d\"} %d %d\n",
 			methods[i%len(methods)], codes[i%len(codes)], i%8, i*7, 1395066363000+i)
 	}
@@ -24,17 +24,17 @@ func scrapePayload(n int) string {
 func BenchmarkParse(b *testing.B) {
 	body := scrapePayload(100)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = parse(body, 1)
+	
+	for b.Loop() {
+		_ = parse([]byte(body), 1)
 	}
 }
 
 func BenchmarkParseLabels(b *testing.B) {
 	const ls = `{method="get",code="200",handler="/api/v3",region="eu-west-1"}`
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = parseLabels(ls)
+	
+	for b.Loop() {
+		_ = parseLabels([]byte(ls))
 	}
 }

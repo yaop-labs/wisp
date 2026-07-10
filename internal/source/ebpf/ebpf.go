@@ -1,12 +1,8 @@
 // Package ebpf is the kernel-side RED/L7 probe source: rate/errors/duration for
 // HTTP/gRPC/SQL and L4/L7 network metrics, observed from the kernel without
-// instrumenting the application.
-//
-// This package implements the Source lifecycle, capability detection, and
-// graceful degradation: when eBPF can't run, the source disables itself and the
-// agent keeps working. The BPF program needs a CO-RE toolchain (clang/LLVM) and
-// CAP_BPF and is built separately; it is not present in this build, so Start
-// runs as a no-op rather than emitting metrics.
+// instrumenting the application. The BPF backend is not compiled into this
+// binary (requires CO-RE/clang); Start is a no-op and the source degrades
+// gracefully when eBPF is unavailable.
 package ebpf
 
 import (

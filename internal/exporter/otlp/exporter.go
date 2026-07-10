@@ -1,6 +1,6 @@
-// Package otlp ships metric batches to coral (or amber directly) over OTLP. It
-// converts wisp's internal model into an OTLP request per the wisp / coral /
-// amber contract and sends it over one of two transports:
+// Package otlp ships metric batches to coral (or amber directly) over OTLP,
+// converting wisp's internal model into ExportMetricsServiceRequest and sending
+// it over one of two transports:
 //
 //   - grpc: ExportMetricsServiceRequest to a MetricsService.
 //   - http: protobuf POST /v1/metrics.

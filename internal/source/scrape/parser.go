@@ -16,7 +16,7 @@ import (
 // a single exponential-histogram series for amber's histogram engine.
 //
 // NaN and +/-Inf samples are dropped: amber rejects them as unencodable in the
-// int64 value model (see the wisp/coral/amber metric contract). defaultTS (unix nanos) is used when
+// int64 value model. defaultTS (unix nanos) is used when
 // a line omits a timestamp.
 //
 // The exposition is parsed as []byte and only the strings that are retained in

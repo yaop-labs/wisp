@@ -200,7 +200,7 @@ func (s *Source) cpu(ts uint64) []model.Series {
 			}
 			// Emit integer milliseconds rather than float seconds: amber stores
 			// it exactly (no scale factor), so rate() returns true-scale ms/s instead
-			// of float-scaled values. See the wisp/coral/amber metric contract value model.
+			// of float-scaled values.
 			ms := jiffies * 1000 / userHZ
 			out = append(out, counterInt("node_cpu_milliseconds_total", "ms", ts, ms,
 				model.Labels{{Name: "cpu", Value: cpuNum}, {Name: "mode", Value: mode}}))

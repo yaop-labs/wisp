@@ -1,8 +1,8 @@
 // Package model defines wisp's internal metric representation. It is the
 // producer-side mirror of amber's metric model and maps 1:1 onto OTLP at
-// export time (see the wisp/coral/amber metric contract): four metric types, label sets that
-// become resource.*/scope.*/point attributes downstream, and a scalar value
-// that is either an exact int64 or a float bounded by the scaled-int64 model.
+// export time: four metric types, label sets that become resource.*/scope.*/point
+// attributes downstream, and a scalar value that is either an exact int64 or a
+// float bounded by the scaled-int64 model.
 package model
 
 import (
@@ -13,8 +13,7 @@ import (
 	"strings"
 )
 
-// MetricType is the instrument kind of a series. Values match the OTLP->amber
-// mapping in the wisp/coral/amber metric contract.
+// MetricType is the instrument kind of a series; values map 1:1 onto OTLP types.
 type MetricType uint8
 
 const (
