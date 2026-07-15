@@ -60,11 +60,11 @@ resource: {attributes: {service.name: wisp}}`, "grpc or http"},
 		{"exporter tls set but disabled", `
 sources: {host: {interval: 15s}}
 exporter: {otlp: {endpoint: "x:4317", tls: {enabled: false, ca_file: /ca.crt}}}
-resource: {attributes: {service.name: wisp}}`, "tls.enabled is false"},
+resource: {attributes: {service.name: wisp}}`, "enabled is false"},
 		{"receiver tls set but disabled", `
 sources: {otlp: {grpc: "0.0.0.0:4317", tls: {enabled: false, cert_file: /s.crt, key_file: /s.key}}}
 exporter: {otlp: {endpoint: "x:4317"}}
-resource: {attributes: {service.name: wisp}}`, "tls.enabled is false"},
+resource: {attributes: {service.name: wisp}}`, "enabled is false"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -114,12 +114,18 @@ sources:
       key_file: /s.key
       client_ca_file: /ca.crt
     auth:
-      api_keys: ["k1", "k2"]
+      bearer:
+        - name: app-1
+          token: k1
+        - name: app-2
+          token_env: WISP_TEST_TOKEN
 exporter:
   otlp:
     endpoint: "127.0.0.1:4317"
+    auth:
+      token: egress-key
     headers:
-      authorization: "Bearer x"
+      x-tenant: tenant-a
     tls:
       enabled: true
       ca_file: /ca.crt
@@ -146,10 +152,13 @@ resource:
 	if otlp.TLS == nil || !otlp.TLS.Enabled || otlp.TLS.ClientCAFile != "/ca.crt" {
 		t.Errorf("receiver tls not decoded: %+v", otlp.TLS)
 	}
-	if otlp.Auth == nil || len(otlp.Auth.APIKeys) != 2 {
+	if otlp.Auth == nil || len(otlp.Auth.Bearer) != 2 || otlp.Auth.Bearer[1].TokenEnv != "WISP_TEST_TOKEN" {
 		t.Errorf("receiver auth not decoded: %+v", otlp.Auth)
 	}
-	if cfg.Exporter.OTLP.Headers["authorization"] != "Bearer x" {
+	if cfg.Exporter.OTLP.Auth == nil || cfg.Exporter.OTLP.Auth.Token != "egress-key" {
+		t.Errorf("exporter auth not decoded: %+v", cfg.Exporter.OTLP.Auth)
+	}
+	if cfg.Exporter.OTLP.Headers["x-tenant"] != "tenant-a" {
 		t.Errorf("exporter headers not decoded: %+v", cfg.Exporter.OTLP.Headers)
 	}
 	if cfg.Exporter.OTLP.TLS == nil || cfg.Exporter.OTLP.TLS.CAFile != "/ca.crt" {

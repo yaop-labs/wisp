@@ -11,11 +11,20 @@ import (
 	"github.com/yaop-labs/wisp/internal/model"
 )
 
+func mustReceiver(t *testing.T, opts Options, logger *slog.Logger) *Receiver {
+	t.Helper()
+	r, err := New(opts, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
 // TestRoundTrip sends a batch through wisp's OTLP exporter into wisp's OTLP
 // receiver and asserts the series survive the wire round-trip intact.
 func TestRoundTrip(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	r := New(Options{GRPCAddr: "127.0.0.1:0"}, logger)
+	r := mustReceiver(t, Options{GRPCAddr: "127.0.0.1:0"}, logger)
 
 	ctx := t.Context()
 	got := make(chan model.Batch, 1)
@@ -82,7 +91,7 @@ func TestRoundTrip(t *testing.T) {
 // exporter into the receiver and asserts the payload survives the OTLP wire.
 func TestRoundTripHistogram(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	r := New(Options{GRPCAddr: "127.0.0.1:0"}, logger)
+	r := mustReceiver(t, Options{GRPCAddr: "127.0.0.1:0"}, logger)
 	ctx := t.Context()
 	got := make(chan model.Batch, 1)
 	go func() {
@@ -131,7 +140,7 @@ func TestRoundTripHistogram(t *testing.T) {
 // its context. GracefulStop alone would hang until the handler returns.
 func TestGRPCStopHonorsContext(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	r := New(Options{GRPCAddr: "127.0.0.1:0"}, logger)
+	r := mustReceiver(t, Options{GRPCAddr: "127.0.0.1:0"}, logger)
 
 	inHandler := make(chan struct{})
 	block := make(chan struct{})

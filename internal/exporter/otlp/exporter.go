@@ -15,7 +15,6 @@ package otlp
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,10 +24,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yaop-labs/reef/bearer"
+	"github.com/yaop-labs/reef/grpcreef"
+	"github.com/yaop-labs/reef/reefclient"
+	"github.com/yaop-labs/reef/tlsconf"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -61,7 +62,9 @@ type Config struct {
 	Timeout  time.Duration
 	// TLS, when non-nil, secures the transport (server auth, or mTLS when a
 	// client certificate is present). nil -> plaintext.
-	TLS *tls.Config
+	TLS *tlsconf.ClientConfig
+	// Auth is Reef's bearer-token source (inline, file, or environment).
+	Auth *bearer.ClientConfig
 	// Headers are sent with every export (e.g. {"authorization": "Bearer ..."}).
 	Headers map[string]string
 }
@@ -69,6 +72,9 @@ type Config struct {
 func New(cfg Config, logger *slog.Logger) (*Exporter, error) {
 	if cfg.Endpoint == "" {
 		return nil, fmt.Errorf("otlp exporter: endpoint required")
+	}
+	if cfg.Auth != nil && hasHeader(cfg.Headers, "authorization") {
+		return nil, fmt.Errorf("otlp exporter: configure bearer auth via auth or headers.authorization, not both")
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -81,15 +87,16 @@ func New(cfg Config, logger *slog.Logger) (*Exporter, error) {
 	)
 	switch cfg.Protocol {
 	case "", "grpc":
-		tr, err = newGRPCTransport(cfg.Endpoint, cfg.TLS, cfg.Headers)
+		tr, err = newGRPCTransport(cfg.Endpoint, cfg.TLS, cfg.Auth, cfg.Headers)
 	case "http":
-		tr = newHTTPTransport(cfg.Endpoint, cfg.TLS, cfg.Headers)
+		tr, err = newHTTPTransport(cfg.Endpoint, cfg.TLS, cfg.Auth, cfg.Headers)
 	default:
 		return nil, fmt.Errorf("otlp exporter: unknown protocol %q (use grpc or http)", cfg.Protocol)
 	}
 	if err != nil {
 		return nil, err
 	}
+	tlsconf.WarnIfPlaintext(logger, "otlp-exporter", cfg.TLS != nil && cfg.TLS.Enabled)
 	return &Exporter{tr: tr, timeout: timeout, logger: logger}, nil
 }
 
@@ -118,12 +125,8 @@ type grpcTransport struct {
 	md     metadata.MD // auth/custom headers attached to each RPC
 }
 
-func newGRPCTransport(endpoint string, tlsConf *tls.Config, headers map[string]string) (transport, error) {
-	creds := insecure.NewCredentials()
-	if tlsConf != nil {
-		creds = credentials.NewTLS(tlsConf)
-	}
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(creds))
+func newGRPCTransport(endpoint string, tlsConf *tlsconf.ClientConfig, auth *bearer.ClientConfig, headers map[string]string) (transport, error) {
+	conn, err := grpcreef.Dial(context.Background(), endpoint, tlsConf, auth)
 	if err != nil {
 		return nil, fmt.Errorf("otlp exporter: dial %s: %w", endpoint, err)
 	}
@@ -177,17 +180,18 @@ type httpTransport struct {
 	headers map[string]string
 }
 
-func newHTTPTransport(endpoint string, tlsConf *tls.Config, headers map[string]string) transport {
+func newHTTPTransport(endpoint string, tlsConf *tlsconf.ClientConfig, auth *bearer.ClientConfig, headers map[string]string) (transport, error) {
 	url := strings.TrimRight(endpoint, "/")
 	if !strings.HasSuffix(url, "/v1/metrics") {
 		url += "/v1/metrics"
 	}
-	client := &http.Client{}
-	if tlsConf != nil {
-		client.Transport = &http.Transport{TLSClientConfig: tlsConf}
+	rt, err := reefclient.Transport(reefclient.Config{TLS: tlsConf, Auth: auth})
+	if err != nil {
+		return nil, fmt.Errorf("otlp exporter http reef: %w", err)
 	}
+	client := &http.Client{Transport: rt}
 	// Timeout is enforced per-request via the context; leave the client open.
-	return &httpTransport{url: url, client: client, headers: headers}
+	return &httpTransport{url: url, client: client, headers: headers}, nil
 }
 
 func (t *httpTransport) send(ctx context.Context, req *colmetricspb.ExportMetricsServiceRequest) error {
@@ -238,4 +242,13 @@ func (t *httpTransport) close() error { return nil }
 // sortedKeys returns map keys in deterministic order (stable header emission).
 func sortedKeys(m map[string]string) []string {
 	return slices.Sorted(maps.Keys(m))
+}
+
+func hasHeader(headers map[string]string, name string) bool {
+	for k := range headers {
+		if strings.EqualFold(k, name) {
+			return true
+		}
+	}
+	return false
 }

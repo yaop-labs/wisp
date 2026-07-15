@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yaop-labs/reef/bearer"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
@@ -27,6 +28,12 @@ func TestNewProtocolSelection(t *testing.T) {
 	}
 	if _, err := New(Config{Endpoint: "x:4317", Protocol: "carrier-pigeon"}, discardLog()); err == nil {
 		t.Error("unknown protocol should error")
+	}
+	if _, err := New(Config{
+		Endpoint: "x:4317", Auth: &bearer.ClientConfig{Token: "reef"},
+		Headers: map[string]string{"Authorization": "Bearer legacy"},
+	}, discardLog()); err == nil {
+		t.Error("auth and headers.authorization together should error")
 	}
 	for _, p := range []string{"", "grpc", "http"} {
 		e, err := New(Config{Endpoint: "127.0.0.1:4317", Protocol: p}, discardLog())
@@ -57,16 +64,18 @@ func TestToRequestEmptyBatch(t *testing.T) {
 
 func TestHTTPTransportSuccessWithHeaders(t *testing.T) {
 	var (
-		mu      sync.Mutex
-		gotPath string
-		gotCT   string
-		gotAuth string
-		gotReq  colmetricspb.ExportMetricsServiceRequest
+		mu        sync.Mutex
+		gotPath   string
+		gotCT     string
+		gotAuth   string
+		gotTenant string
+		gotReq    colmetricspb.ExportMetricsServiceRequest
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		gotPath, gotCT, gotAuth = r.URL.Path, r.Header.Get("Content-Type"), r.Header.Get("Authorization")
+		gotTenant = r.Header.Get("X-Tenant")
 		_ = proto.Unmarshal(body, &gotReq)
 		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
@@ -75,7 +84,7 @@ func TestHTTPTransportSuccessWithHeaders(t *testing.T) {
 
 	// Endpoint without /v1/metrics must be normalized to it.
 	e, err := New(Config{Endpoint: srv.URL, Protocol: "http", Timeout: 2 * time.Second,
-		Headers: map[string]string{"authorization": "Bearer tok"}}, discardLog())
+		Auth: &bearer.ClientConfig{Token: "tok"}, Headers: map[string]string{"x-tenant": "test"}}, discardLog())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +106,9 @@ func TestHTTPTransportSuccessWithHeaders(t *testing.T) {
 	}
 	if gotAuth != "Bearer tok" {
 		t.Errorf("auth header = %q, want 'Bearer tok'", gotAuth)
+	}
+	if gotTenant != "test" {
+		t.Errorf("tenant header = %q, want 'test'", gotTenant)
 	}
 	if len(gotReq.ResourceMetrics) != 1 {
 		t.Errorf("server got %d resource metrics, want 1", len(gotReq.ResourceMetrics))
