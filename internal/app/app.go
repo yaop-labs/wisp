@@ -4,7 +4,6 @@ package app
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -29,7 +28,6 @@ import (
 	hostsrc "github.com/yaop-labs/wisp/internal/source/host"
 	otlprecv "github.com/yaop-labs/wisp/internal/source/otlp"
 	scrapesrc "github.com/yaop-labs/wisp/internal/source/scrape"
-	"github.com/yaop-labs/wisp/internal/tlsconfig"
 )
 
 type App struct {
@@ -72,35 +70,6 @@ func scrapeConfigFrom(sc *config.ScrapeSource) scrapesrc.Config {
 	return scrapesrc.Config{Interval: sc.Interval.Std(), Timeout: sc.Timeout.Std(), Static: jobs, FileSD: globs, DNSSD: dnsSD, KubeSD: kubeSD}
 }
 
-// tlsSettings maps the YAML TLS config onto the transport-agnostic Settings.
-func tlsSettings(c *config.TLSConfig) tlsconfig.Settings {
-	return tlsconfig.Settings{
-		Enabled:            c.Enabled,
-		CAFile:             c.CAFile,
-		CertFile:           c.CertFile,
-		KeyFile:            c.KeyFile,
-		ServerName:         c.ServerName,
-		InsecureSkipVerify: c.InsecureSkipVerify,
-		ClientCAFile:       c.ClientCAFile,
-	}
-}
-
-// clientTLS builds the exporter-side *tls.Config, or nil when TLS is disabled.
-func clientTLS(c *config.TLSConfig) (*tls.Config, error) {
-	if c == nil || !c.Enabled {
-		return nil, nil
-	}
-	return tlsconfig.Client(tlsSettings(c))
-}
-
-// serverTLS builds the receiver-side *tls.Config, or nil when TLS is disabled.
-func serverTLS(c *config.TLSConfig) (*tls.Config, error) {
-	if c == nil || !c.Enabled {
-		return nil, nil
-	}
-	return tlsconfig.Server(tlsSettings(c))
-}
-
 func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -134,21 +103,27 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		}},
 		{"otlp", cfg.Sources.OTLP != nil, func() (pipeline.Source, error) {
 			oc := cfg.Sources.OTLP
-			recvTLS, err := serverTLS(oc.TLS)
-			if err != nil {
-				return nil, fmt.Errorf("receiver tls: %w", err)
+			if warnings, err := oc.TLS.Validate(); err != nil {
+				return nil, fmt.Errorf("receiver reef tls: %w", err)
+			} else {
+				for _, warning := range warnings {
+					logger.Warn("reef configuration warning", "edge", "otlp-receiver", "warning", warning)
+				}
 			}
-			var apiKeys []string
-			if oc.Auth != nil {
-				apiKeys = oc.Auth.APIKeys
+			if warnings, err := oc.Auth.Validate(); err != nil {
+				return nil, fmt.Errorf("receiver reef auth: %w", err)
+			} else {
+				for _, warning := range warnings {
+					logger.Warn("reef configuration warning", "edge", "otlp-receiver", "warning", warning)
+				}
 			}
 			logger.Info("otlp receive source enabled",
 				"grpc", oc.GRPC, "http", oc.HTTP,
-				"tls", recvTLS != nil, "mtls", oc.TLS != nil && oc.TLS.ClientCAFile != "",
-				"auth", len(apiKeys) > 0)
+				"tls", oc.TLS != nil && oc.TLS.Enabled, "mtls", oc.TLS != nil && oc.TLS.ClientCAFile != "",
+				"auth", oc.Auth != nil && len(oc.Auth.Bearer) > 0)
 			return otlprecv.New(otlprecv.Options{
-				GRPCAddr: oc.GRPC, HTTPAddr: oc.HTTP, TLS: recvTLS, APIKeys: apiKeys,
-			}, logger), nil
+				GRPCAddr: oc.GRPC, HTTPAddr: oc.HTTP, TLS: oc.TLS, Auth: oc.Auth,
+			}, logger)
 		}},
 		{"ebpf", cfg.Sources.EBPF != nil, func() (pipeline.Source, error) {
 			ok, reason := ebpfsrc.Available()
@@ -176,23 +151,37 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		}
 	}
 
-	expTLS, err := clientTLS(cfg.Exporter.OTLP.TLS)
-	if err != nil {
-		return nil, fmt.Errorf("otlp exporter tls: %w", err)
+	if warnings, err := cfg.Exporter.OTLP.TLS.Validate(); err != nil {
+		return nil, fmt.Errorf("exporter reef tls: %w", err)
+	} else {
+		for _, warning := range warnings {
+			logger.Warn("reef configuration warning", "edge", "otlp-exporter", "warning", warning)
+		}
+	}
+	if warnings, err := cfg.Exporter.OTLP.Auth.Validate(); err != nil {
+		return nil, fmt.Errorf("exporter reef auth: %w", err)
+	} else {
+		for _, warning := range warnings {
+			logger.Warn("reef configuration warning", "edge", "otlp-exporter", "warning", warning)
+		}
 	}
 	otlpExp, err := otlpexp.New(otlpexp.Config{
 		Endpoint: cfg.Exporter.OTLP.Endpoint,
 		Protocol: cfg.Exporter.OTLP.Protocol,
 		Timeout:  cfg.Exporter.OTLP.Timeout.Std(),
-		TLS:      expTLS,
+		TLS:      cfg.Exporter.OTLP.TLS,
+		Auth:     cfg.Exporter.OTLP.Auth,
 		Headers:  cfg.Exporter.OTLP.Headers,
 	}, logger)
 	if err != nil {
 		return nil, err
 	}
 	if len(cfg.Exporter.OTLP.Headers) > 0 {
-		// Log only the header names - never their values (bearer tokens etc.).
-		logger.Info("otlp exporter auth headers configured", "header_keys", redact.Keys(cfg.Exporter.OTLP.Headers))
+		// Log only the header names, never their values.
+		logger.Info("otlp exporter additional headers configured", "header_keys", redact.Keys(cfg.Exporter.OTLP.Headers))
+	}
+	if cfg.Exporter.OTLP.Auth != nil {
+		logger.Info("otlp exporter reef bearer auth configured")
 	}
 
 	// otlp -> retry (transient blips) -> spool (outages, restarts).

@@ -46,7 +46,7 @@ func onePointRequest() *colmetricspb.ExportMetricsServiceRequest {
 // service answers RESOURCE_EXHAUSTED and the HTTP endpoint answers 429.
 func TestReceiverSignalsBackpressure(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	r := New(Options{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0"}, logger)
+	r := mustReceiver(t, Options{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0"}, logger)
 	ctx := t.Context()
 	go func() {
 		_ = r.Start(ctx, func(context.Context, model.Batch) error { return pipeline.ErrBackpressure })

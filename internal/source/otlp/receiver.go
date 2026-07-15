@@ -8,17 +8,18 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
+	"github.com/yaop-labs/reef/bearer"
+	"github.com/yaop-labs/reef/grpcreef"
+	"github.com/yaop-labs/reef/tlsconf"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
@@ -33,21 +34,24 @@ const maxBodyBytes = 16 << 20
 
 // Options configures a Receiver. Empty GRPCAddr/HTTPAddr disable that transport;
 // a non-nil TLS secures both (mTLS when it requires client certs); non-empty
-// APIKeys gate ingest behind a bearer token.
+// Reef TLS and bearer blocks secure both transports consistently.
 type Options struct {
 	GRPCAddr string
 	HTTPAddr string
-	TLS      *tls.Config
-	APIKeys  []string
+	TLS      *tlsconf.ServerConfig
+	Auth     *bearer.ServerConfig
 }
 
 // Receiver serves OTLP metrics over gRPC and/or HTTP.
 type Receiver struct {
 	grpcAddr string
 	httpAddr string
-	tls      *tls.Config         // server-side TLS (mTLS when client CAs set); nil -> plaintext
-	apiKeys  map[string]struct{} // accepted bearer tokens; empty -> auth disabled
+	tls      *tls.Config // HTTP server-side TLS; gRPC credentials live in grpcOpts
+	secure   bool
 	logger   *slog.Logger
+
+	grpcOpts       []grpc.ServerOption
+	httpMiddleware func(http.Handler) http.Handler
 
 	emit func(context.Context, model.Batch) error
 
@@ -58,39 +62,43 @@ type Receiver struct {
 	ready   chan struct{}
 }
 
-// New builds a Receiver from opts.
-func New(opts Options, logger *slog.Logger) *Receiver {
-	var keys map[string]struct{}
-	if len(opts.APIKeys) > 0 {
-		keys = make(map[string]struct{}, len(opts.APIKeys))
-		for _, k := range opts.APIKeys {
-			keys[k] = struct{}{}
+// New builds a Receiver from opts, materializing Reef's TLS and bearer layers
+// before any listener is opened so invalid credentials fail startup.
+func New(opts Options, logger *slog.Logger) (*Receiver, error) {
+	var grpcOpts []grpc.ServerOption
+	if opts.GRPCAddr != "" {
+		var err error
+		grpcOpts, err = grpcreef.ServerOptions(opts.TLS, opts.Auth)
+		if err != nil {
+			return nil, fmt.Errorf("otlp receiver grpc reef: %w", err)
 		}
 	}
-	return &Receiver{
-		grpcAddr: opts.GRPCAddr, httpAddr: opts.HTTPAddr, tls: opts.TLS,
-		apiKeys: keys, logger: logger, ready: make(chan struct{}),
-	}
-}
 
-// authorized reports whether a request's bearer credential is accepted. When no
-// API keys are configured, auth is disabled (all requests pass).
-func (r *Receiver) authorized(authHeader string) bool {
-	if len(r.apiKeys) == 0 {
-		return true
+	httpMiddleware := func(next http.Handler) http.Handler { return next }
+	var httpTLS *tls.Config
+	if opts.HTTPAddr != "" {
+		var err error
+		httpTLS, err = tlsconf.Server(opts.TLS)
+		if err != nil {
+			return nil, fmt.Errorf("otlp receiver http reef tls: %w", err)
+		}
+		httpMiddleware, err = bearer.Require(opts.Auth)
+		if err != nil {
+			return nil, fmt.Errorf("otlp receiver http reef auth: %w", err)
+		}
 	}
-	const prefix = "Bearer "
-	if len(authHeader) <= len(prefix) || !strings.EqualFold(authHeader[:len(prefix)], prefix) {
-		return false
-	}
-	_, ok := r.apiKeys[authHeader[len(prefix):]]
-	return ok
+	tlsconf.WarnIfPlaintext(logger, "otlp-receiver", opts.TLS != nil && opts.TLS.Enabled)
+	return &Receiver{
+		grpcAddr: opts.GRPCAddr, httpAddr: opts.HTTPAddr, tls: httpTLS,
+		secure: opts.TLS != nil && opts.TLS.Enabled, logger: logger,
+		grpcOpts: grpcOpts, httpMiddleware: httpMiddleware, ready: make(chan struct{}),
+	}, nil
 }
 
 // Start binds the listeners and serves until ctx is canceled.
 func (r *Receiver) Start(ctx context.Context, emit func(context.Context, model.Batch) error) error {
 	r.emit = emit
-	secure := r.tls != nil
+	secure := r.secure
 
 	if r.grpcAddr != "" {
 		ln, err := net.Listen("tcp", r.grpcAddr)
@@ -99,10 +107,7 @@ func (r *Receiver) Start(ctx context.Context, emit func(context.Context, model.B
 			return err
 		}
 		r.grpcLn = ln
-		opts := []grpc.ServerOption{grpc.MaxRecvMsgSize(maxBodyBytes)}
-		if secure {
-			opts = append(opts, grpc.Creds(credentials.NewTLS(r.tls)))
-		}
+		opts := append([]grpc.ServerOption{grpc.MaxRecvMsgSize(maxBodyBytes)}, r.grpcOpts...)
 		r.grpcSrv = grpc.NewServer(opts...)
 		colmetricspb.RegisterMetricsServiceServer(r.grpcSrv, &grpcService{r: r})
 		go func() { _ = r.grpcSrv.Serve(ln) }()
@@ -122,7 +127,7 @@ func (r *Receiver) Start(ctx context.Context, emit func(context.Context, model.B
 		mux.HandleFunc("/v1/metrics", r.handleHTTP)
 		r.httpLn = ln
 		r.httpSrv = &http.Server{
-			Handler:           mux,
+			Handler:           r.httpMiddleware(mux),
 			ReadHeaderTimeout: 10 * time.Second, // bound slow-header (Slowloris) clients
 			IdleTimeout:       120 * time.Second,
 		}
@@ -204,9 +209,6 @@ type grpcService struct {
 }
 
 func (s *grpcService) Export(ctx context.Context, req *colmetricspb.ExportMetricsServiceRequest) (*colmetricspb.ExportMetricsServiceResponse, error) {
-	if !s.r.authorized(bearerFromMetadata(ctx)) {
-		return nil, status.Error(codes.Unauthenticated, "missing or invalid bearer token")
-	}
 	if err := s.r.ingest(ctx, req); err != nil {
 		if errors.Is(err, pipeline.ErrBackpressure) {
 			return nil, status.Error(codes.ResourceExhausted, "wisp backpressure: spool above high-water mark")
@@ -216,25 +218,9 @@ func (s *grpcService) Export(ctx context.Context, req *colmetricspb.ExportMetric
 	return &colmetricspb.ExportMetricsServiceResponse{}, nil
 }
 
-// bearerFromMetadata pulls the Authorization value from incoming gRPC metadata.
-func bearerFromMetadata(ctx context.Context) string {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return ""
-	}
-	if vals := md.Get("authorization"); len(vals) > 0 {
-		return vals[0]
-	}
-	return ""
-}
-
 func (r *Receiver) handleHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !r.authorized(req.Header.Get("Authorization")) {
-		http.Error(w, "missing or invalid bearer token", http.StatusUnauthorized)
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxBodyBytes))

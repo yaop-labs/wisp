@@ -7,6 +7,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/yaop-labs/reef/bearer"
+	"github.com/yaop-labs/reef/tlsconf"
 	"gopkg.in/yaml.v3"
 )
 
@@ -102,30 +104,10 @@ type FileSDConfig struct {
 
 // OTLPSource configures the OTLP receiver (apps push to wisp as a local gateway).
 type OTLPSource struct {
-	GRPC string      `yaml:"grpc"`
-	HTTP string      `yaml:"http"`
-	TLS  *TLSConfig  `yaml:"tls"`
-	Auth *AuthConfig `yaml:"auth"`
-}
-
-// TLSConfig configures TLS for an OTLP transport. On the exporter side ca_file
-// verifies the server and cert_file/key_file supply a client cert for mTLS; on
-// the receiver side cert_file/key_file are the server cert and client_ca_file
-// (when set) requires+verifies client certs (mTLS).
-type TLSConfig struct {
-	Enabled            bool   `yaml:"enabled"`
-	CAFile             string `yaml:"ca_file"`
-	CertFile           string `yaml:"cert_file"`
-	KeyFile            string `yaml:"key_file"`
-	ServerName         string `yaml:"server_name"`
-	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
-	ClientCAFile       string `yaml:"client_ca_file"`
-}
-
-// AuthConfig configures receiver authentication. APIKeys, when non-empty, gates
-// ingest behind a bearer token (Authorization: Bearer <key>).
-type AuthConfig struct {
-	APIKeys []string `yaml:"api_keys"`
+	GRPC string                `yaml:"grpc"`
+	HTTP string                `yaml:"http"`
+	TLS  *tlsconf.ServerConfig `yaml:"tls"`
+	Auth *bearer.ServerConfig  `yaml:"auth"`
 }
 
 // EBPFSource configures kernel-side probes (Linux-only, requires CAP_BPF).
@@ -183,12 +165,13 @@ type ExporterConfig struct {
 
 // OTLPExporter configures the OTLP exporter to the collector (or amber directly).
 type OTLPExporter struct {
-	Endpoint string            `yaml:"endpoint"`
-	Protocol string            `yaml:"protocol"` // "grpc" | "http"
-	Timeout  Duration          `yaml:"timeout"`
-	Retry    RetryConfig       `yaml:"retry"`
-	TLS      *TLSConfig        `yaml:"tls"`
-	Headers  map[string]string `yaml:"headers"` // sent with each export (e.g. authorization)
+	Endpoint string                `yaml:"endpoint"`
+	Protocol string                `yaml:"protocol"` // "grpc" | "http"
+	Timeout  Duration              `yaml:"timeout"`
+	Retry    RetryConfig           `yaml:"retry"`
+	TLS      *tlsconf.ClientConfig `yaml:"tls"`
+	Auth     *bearer.ClientConfig  `yaml:"auth"`
+	Headers  map[string]string     `yaml:"headers"` // additional non-auth headers
 }
 
 // RetryConfig configures exporter retries.
@@ -252,29 +235,21 @@ func (c *Config) Validate() error {
 	if o := c.Sources.OTLP; o != nil && o.GRPC == "" && o.HTTP == "" {
 		return fmt.Errorf("sources.otlp: at least one of grpc or http address is required")
 	}
-	if err := validateTLS(c.Exporter.OTLP.TLS, "exporter.otlp.tls"); err != nil {
-		return err
+	// Reef owns the transport-security contract. Disabled blocks are validated
+	// here without filesystem I/O; enabled blocks are fully materialized (and
+	// their files checked) when app wiring builds the edge.
+	if c.Exporter.OTLP.TLS != nil && !c.Exporter.OTLP.TLS.Enabled {
+		if _, err := tlsconf.Client(c.Exporter.OTLP.TLS); err != nil {
+			return fmt.Errorf("exporter.otlp.tls: %w", err)
+		}
 	}
-	if c.Sources.OTLP != nil {
-		if err := validateTLS(c.Sources.OTLP.TLS, "sources.otlp.tls"); err != nil {
-			return err
+	if c.Sources.OTLP != nil && c.Sources.OTLP.TLS != nil && !c.Sources.OTLP.TLS.Enabled {
+		if _, err := tlsconf.Server(c.Sources.OTLP.TLS); err != nil {
+			return fmt.Errorf("sources.otlp.tls: %w", err)
 		}
 	}
 	if _, ok := c.Resource.Attributes["service.name"]; !ok {
 		return fmt.Errorf("resource.attributes.service.name is required")
-	}
-	return nil
-}
-
-// validateTLS rejects a TLS block that carries cert/CA material while disabled:
-// that is almost always a forgotten `enabled: true`, and silently ignoring it
-// would send metrics and bearer tokens in plaintext.
-func validateTLS(c *TLSConfig, where string) error {
-	if c == nil || c.Enabled {
-		return nil
-	}
-	if c.CAFile != "" || c.CertFile != "" || c.KeyFile != "" || c.ClientCAFile != "" {
-		return fmt.Errorf("%s: tls fields are set but tls.enabled is false; set enabled: true or remove them", where)
 	}
 	return nil
 }

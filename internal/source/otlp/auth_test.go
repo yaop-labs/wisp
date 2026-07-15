@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yaop-labs/reef/bearer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -18,14 +19,18 @@ import (
 
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 
+	exp "github.com/yaop-labs/wisp/internal/exporter/otlp"
 	"github.com/yaop-labs/wisp/internal/model"
 )
 
-// TestReceiverAPIKeyAuth: with API keys configured, only a valid bearer token
+// TestReceiverBearerAuth: with Reef bearer keys configured, only a valid token
 // is accepted over both gRPC and HTTP.
-func TestReceiverAPIKeyAuth(t *testing.T) {
+func TestReceiverBearerAuth(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	r := New(Options{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0", APIKeys: []string{"s3cr3t"}}, logger)
+	r := mustReceiver(t, Options{
+		GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0",
+		Auth: &bearer.ServerConfig{Bearer: []bearer.Key{{Name: "test-client", Token: "s3cr3t"}}},
+	}, logger)
 	ctx := t.Context()
 	go func() {
 		_ = r.Start(ctx, func(context.Context, model.Batch) error { return nil })
@@ -82,5 +87,18 @@ func TestReceiverAPIKeyAuth(t *testing.T) {
 	}
 	if code := httpExport("Bearer s3cr3t"); code != http.StatusOK {
 		t.Errorf("http valid-token = %d, want 200", code)
+	}
+
+	// Wisp's exporter uses the same Reef client auth contract over gRPC.
+	e, err := exp.New(exp.Config{
+		Endpoint: r.GRPCAddr(), Protocol: "grpc", Timeout: 3 * time.Second,
+		Auth: &bearer.ClientConfig{Token: "s3cr3t"},
+	}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	if err := exportOne(e); err != nil {
+		t.Fatalf("reef-authenticated exporter: %v", err)
 	}
 }

@@ -43,7 +43,7 @@ var (
 	CardinalityUntracked = newCounter("wisp_cardinality_untracked_total", "New series admitted un-budgeted because the cardinality tracker is at capacity.")
 	LabelLimitDropped    = newCounter("wisp_label_limit_dropped_total", "Series dropped because they exceeded max_labels_per_series.")
 	ResetUntracked       = newCounter("wisp_reset_untracked_total", "Counter points not reset-normalized because the reset tracker is at capacity.")
-	ResetReordered       = newCounter("wisp_reset_reordered_total", "Counter points seen out of order (older timestamp than the series' last processed point); passed through without reset detection to avoid spurious inflation.")
+	ResetReordered       = newCounter("wisp_reset_reordered_total", "Counter points dropped because their timestamp was older than the series' last processed point and a correct reset offset could not be reconstructed.")
 	SpoolEnqueued        = newCounter("wisp_spool_enqueued_total", "Batches written to the on-disk spool after export failure.")
 	SpoolDrained         = newCounter("wisp_spool_drained_total", "Spooled batches successfully re-sent.")
 	SpoolDropped         = newCounter("wisp_spool_dropped_total", "Spooled batches dropped because the spool was full.")

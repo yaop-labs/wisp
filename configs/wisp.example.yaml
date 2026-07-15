@@ -44,8 +44,11 @@ sources:
   #     cert_file: /etc/wisp/server.crt
   #     key_file: /etc/wisp/server.key
   #     client_ca_file: /etc/wisp/ca.crt   # require+verify client certs (mTLS)
+  #     min_version: "1.3"
   #   auth:
-  #     api_keys: ["${WISP_INGEST_KEY}"]   # require Authorization: Bearer <key>
+  #     bearer:                             # Reef named credentials
+  #       - name: app-sdk
+  #         token_env: WISP_INGEST_KEY      # also: token_file or token
 
   # Kernel-side RED/L7 metrics without instrumenting the app. Linux-only, CAP_BPF.
   # ebpf:
@@ -76,8 +79,10 @@ exporter:
     #   ca_file: /etc/wisp/ca.crt
     #   cert_file: /etc/wisp/client.crt   # client cert (mTLS)
     #   key_file: /etc/wisp/client.key
-    # headers:                  # sent with every export; values never logged
-    #   authorization: "Bearer ${WISP_EGRESS_KEY}"
+    # auth:                     # Reef injects Authorization over HTTP and gRPC
+    #   token_env: WISP_EGRESS_KEY         # also: token_file or token
+    # headers:                  # additional headers; values are never logged
+    #   x-tenant: production
     retry:
       max_attempts: 5
       initial_backoff: 200ms

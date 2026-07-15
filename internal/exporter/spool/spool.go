@@ -55,6 +55,7 @@ type Exporter struct {
 	highWM   int64
 	lowWM    int64
 	logger   *slog.Logger
+	syncDir  func(string) error // injected in tests to exercise post-rename failures
 
 	mu      sync.Mutex // serializes enqueue/eviction disk mutations
 	drainMu sync.Mutex // ensures only one drain pass runs at a time
@@ -113,7 +114,8 @@ func New(inner pipeline.Exporter, cfg Config, logger *slog.Logger) (*Exporter, e
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Exporter{
 		inner: inner, dir: cfg.Dir, maxBytes: cfg.MaxBytes, maxAge: cfg.MaxAge,
-		highWM: cfg.HighWatermark, lowWM: cfg.LowWatermark, logger: logger, cancel: cancel,
+		highWM: cfg.HighWatermark, lowWM: cfg.LowWatermark, logger: logger,
+		syncDir: syncDir, cancel: cancel,
 	}
 	e.cleanupTemp() // discard torn .tmp files from a previous crash
 	e.seedDepth()   // count pre-existing files (durable across restarts)
@@ -216,6 +218,10 @@ func (e *Exporter) enqueue(b model.Batch) error {
 	name := fmt.Sprintf("%020d-%06d%s", time.Now().UnixNano(), e.seq.Add(1), fileSuffix)
 	final := filepath.Join(e.dir, name)
 	tmp := final + ".tmp"
+	// Any failure before rename can leave a partial/full temp file. Remove it in
+	// the same process rather than waiting for a restart, otherwise repeated
+	// ENOSPC/fsync/rename failures can consume the remaining disk or inodes.
+	defer func() { _ = os.Remove(tmp) }()
 	if err := writeFileSync(tmp, data); err != nil {
 		return err
 	}
@@ -224,12 +230,15 @@ func (e *Exporter) enqueue(b model.Batch) error {
 	}
 	// fsync the directory so the rename (the new entry) is itself durable; without
 	// it a crash can lose a batch we already told the caller was accepted.
-	if err := syncDir(e.dir); err != nil {
-		return err
-	}
+	// Once rename succeeds the final file is visible to the drainer regardless of
+	// whether the directory fsync succeeds. Account it before reporting a sync
+	// failure so cached depth cannot go negative when that file is later removed.
 	e.curBytes.Add(int64(len(data)))
 	e.curCount.Add(1)
 	e.updatePressure()
+	if err := e.syncDir(e.dir); err != nil {
+		return fmt.Errorf("sync spool directory: %w", err)
+	}
 	return nil
 }
 

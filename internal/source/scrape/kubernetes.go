@@ -10,10 +10,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yaop-labs/reef/tlsconf"
+
 	"github.com/yaop-labs/wisp/internal/httpx"
 	"github.com/yaop-labs/wisp/internal/model"
 	"github.com/yaop-labs/wisp/internal/selfobs"
-	"github.com/yaop-labs/wisp/internal/tlsconfig"
 )
 
 // Kubernetes pod discovery. To keep the agent stdlib-first (no client-go), wisp
@@ -56,7 +57,7 @@ func inClusterClient() (*kubeClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read service account token: %w", err)
 	}
-	tlsCfg, err := tlsconfig.Client(tlsconfig.Settings{CAFile: saCAFile})
+	tlsCfg, err := tlsconf.Client(&tlsconf.ClientConfig{Enabled: true, CAFile: saCAFile})
 	if err != nil {
 		return nil, fmt.Errorf("service account CA: %w", err)
 	}

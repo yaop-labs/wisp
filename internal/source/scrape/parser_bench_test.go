@@ -22,19 +22,20 @@ func scrapePayload(n int) string {
 }
 
 func BenchmarkParse(b *testing.B) {
-	body := scrapePayload(100)
+	body := []byte(scrapePayload(100))
 	b.ReportAllocs()
-	
+
 	for b.Loop() {
-		_ = parse([]byte(body), 1)
+		_ = parse(body, 1)
 	}
 }
 
 func BenchmarkParseLabels(b *testing.B) {
 	const ls = `{method="get",code="200",handler="/api/v3",region="eu-west-1"}`
+	labels := []byte(ls)
 	b.ReportAllocs()
-	
+
 	for b.Loop() {
-		_ = parseLabels([]byte(ls))
+		_ = parseLabels(labels)
 	}
 }

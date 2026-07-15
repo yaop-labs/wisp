@@ -15,7 +15,6 @@ package otlp
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,10 +24,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yaop-labs/reef/bearer"
+	"github.com/yaop-labs/reef/grpcreef"
+	"github.com/yaop-labs/reef/reefclient"
+	"github.com/yaop-labs/reef/tlsconf"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -61,7 +62,9 @@ type Config struct {
 	Timeout  time.Duration
 	// TLS, when non-nil, secures the transport (server auth, or mTLS when a
 	// client certificate is present). nil -> plaintext.
-	TLS *tls.Config
+	TLS *tlsconf.ClientConfig
+	// Auth is Reef's bearer-token source (inline, file, or environment).
+	Auth *bearer.ClientConfig
 	// Headers are sent with every export (e.g. {"authorization": "Bearer ..."}).
 	Headers map[string]string
 }
@@ -69,6 +72,9 @@ type Config struct {
 func New(cfg Config, logger *slog.Logger) (*Exporter, error) {
 	if cfg.Endpoint == "" {
 		return nil, fmt.Errorf("otlp exporter: endpoint required")
+	}
+	if cfg.Auth != nil && hasHeader(cfg.Headers, "authorization") {
+		return nil, fmt.Errorf("otlp exporter: configure bearer auth via auth or headers.authorization, not both")
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -81,15 +87,16 @@ func New(cfg Config, logger *slog.Logger) (*Exporter, error) {
 	)
 	switch cfg.Protocol {
 	case "", "grpc":
-		tr, err = newGRPCTransport(cfg.Endpoint, cfg.TLS, cfg.Headers)
+		tr, err = newGRPCTransport(cfg.Endpoint, cfg.TLS, cfg.Auth, cfg.Headers)
 	case "http":
-		tr = newHTTPTransport(cfg.Endpoint, cfg.TLS, cfg.Headers)
+		tr, err = newHTTPTransport(cfg.Endpoint, cfg.TLS, cfg.Auth, cfg.Headers)
 	default:
 		return nil, fmt.Errorf("otlp exporter: unknown protocol %q (use grpc or http)", cfg.Protocol)
 	}
 	if err != nil {
 		return nil, err
 	}
+	tlsconf.WarnIfPlaintext(logger, "otlp-exporter", cfg.TLS != nil && cfg.TLS.Enabled)
 	return &Exporter{tr: tr, timeout: timeout, logger: logger}, nil
 }
 
@@ -118,12 +125,8 @@ type grpcTransport struct {
 	md     metadata.MD // auth/custom headers attached to each RPC
 }
 
-func newGRPCTransport(endpoint string, tlsConf *tls.Config, headers map[string]string) (transport, error) {
-	creds := insecure.NewCredentials()
-	if tlsConf != nil {
-		creds = credentials.NewTLS(tlsConf)
-	}
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(creds))
+func newGRPCTransport(endpoint string, tlsConf *tlsconf.ClientConfig, auth *bearer.ClientConfig, headers map[string]string) (transport, error) {
+	conn, err := grpcreef.Dial(context.Background(), endpoint, tlsConf, auth)
 	if err != nil {
 		return nil, fmt.Errorf("otlp exporter: dial %s: %w", endpoint, err)
 	}
@@ -143,12 +146,11 @@ func (t *grpcTransport) send(ctx context.Context, req *colmetricspb.ExportMetric
 
 // permanentGRPC reports gRPC codes that mean the batch itself is bad and will
 // never be accepted, so holding or retrying it is pointless. ResourceExhausted
-// is included because the client raises it for an oversized message (larger than
-// the max send size); wisp does its own backpressure, so a server rate-limit
-// signalled the same way is acceptably treated as permanent rather than looping.
+// is deliberately transient: OTLP servers (including wisp's receiver) use it to
+// signal rate limiting/backpressure as well as message-size limits.
 func permanentGRPC(c codes.Code) bool {
 	switch c {
-	case codes.InvalidArgument, codes.OutOfRange, codes.Unimplemented, codes.ResourceExhausted:
+	case codes.InvalidArgument, codes.OutOfRange:
 		return true
 	default:
 		return false
@@ -178,17 +180,18 @@ type httpTransport struct {
 	headers map[string]string
 }
 
-func newHTTPTransport(endpoint string, tlsConf *tls.Config, headers map[string]string) transport {
+func newHTTPTransport(endpoint string, tlsConf *tlsconf.ClientConfig, auth *bearer.ClientConfig, headers map[string]string) (transport, error) {
 	url := strings.TrimRight(endpoint, "/")
 	if !strings.HasSuffix(url, "/v1/metrics") {
 		url += "/v1/metrics"
 	}
-	client := &http.Client{}
-	if tlsConf != nil {
-		client.Transport = &http.Transport{TLSClientConfig: tlsConf}
+	rt, err := reefclient.Transport(reefclient.Config{TLS: tlsConf, Auth: auth})
+	if err != nil {
+		return nil, fmt.Errorf("otlp exporter http reef: %w", err)
 	}
+	client := &http.Client{Transport: rt}
 	// Timeout is enforced per-request via the context; leave the client open.
-	return &httpTransport{url: url, client: client, headers: headers}
+	return &httpTransport{url: url, client: client, headers: headers}, nil
 }
 
 func (t *httpTransport) send(ctx context.Context, req *colmetricspb.ExportMetricsServiceRequest) error {
@@ -221,12 +224,17 @@ func (t *httpTransport) send(ctx context.Context, req *colmetricspb.ExportMetric
 	return nil
 }
 
-// permanentHTTP reports HTTP statuses that mean the request is bad and won't
-// succeed on retry: 4xx client errors other than 408 (timeout) and 429 (rate
-// limit). 5xx are transient (server-side), worth retrying/spooling.
+// permanentHTTP reports HTTP statuses that unambiguously describe a bad payload.
+// Authentication, authorization, routing, conflict, timeout, and rate-limit
+// failures can recover after configuration or server-state changes, so they must
+// remain spooled rather than being discarded.
 func permanentHTTP(code int) bool {
-	return code >= 400 && code < 500 &&
-		code != http.StatusRequestTimeout && code != http.StatusTooManyRequests
+	switch code {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	default:
+		return false
+	}
 }
 
 func (t *httpTransport) close() error { return nil }
@@ -234,4 +242,13 @@ func (t *httpTransport) close() error { return nil }
 // sortedKeys returns map keys in deterministic order (stable header emission).
 func sortedKeys(m map[string]string) []string {
 	return slices.Sorted(maps.Keys(m))
+}
+
+func hasHeader(headers map[string]string, name string) bool {
+	for k := range headers {
+		if strings.EqualFold(k, name) {
+			return true
+		}
+	}
+	return false
 }
