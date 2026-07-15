@@ -29,9 +29,10 @@ func IsLoggableEmitError(ctx context.Context, err error) bool {
 }
 
 // ErrPermanent marks an export failure that will never succeed for this batch:
-// a malformed or oversized request (4xx / InvalidArgument / ResourceExhausted),
-// as opposed to a transient outage. The retry exporter stops retrying it and the
-// spool quarantines the batch instead of letting it block the drain queue.
+// a malformed or oversized request (payload-specific HTTP/gRPC status), as
+// opposed to a transient outage or recoverable server/configuration state. The
+// retry exporter stops retrying it and the spool quarantines the batch instead
+// of letting it block the drain queue.
 var ErrPermanent = errors.New("pipeline: permanent export failure")
 
 // Config controls pipeline concurrency.

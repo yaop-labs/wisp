@@ -12,6 +12,7 @@ import (
 	"time"
 
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/yaop-labs/wisp/internal/model"
@@ -128,6 +129,10 @@ func TestHTTPTransportClassifiesStatus(t *testing.T) {
 		{http.StatusBadRequest, true},            // 400: malformed
 		{http.StatusRequestEntityTooLarge, true}, // 413: oversized
 		{http.StatusUnprocessableEntity, true},   // 422
+		{http.StatusUnauthorized, false},         // 401: credentials can be rotated
+		{http.StatusForbidden, false},            // 403: authorization can change
+		{http.StatusNotFound, false},             // 404: endpoint/config can change
+		{http.StatusConflict, false},             // 409: server state can change
 		{http.StatusTooManyRequests, false},      // 429: back off, don't drop
 		{http.StatusInternalServerError, false},  // 500: transient
 		{http.StatusServiceUnavailable, false},   // 503: transient
@@ -150,5 +155,25 @@ func TestHTTPTransportClassifiesStatus(t *testing.T) {
 		}
 		_ = e.Close()
 		srv.Close()
+	}
+}
+
+func TestGRPCPermanentClassification(t *testing.T) {
+	cases := []struct {
+		code      codes.Code
+		permanent bool
+	}{
+		{codes.InvalidArgument, true},
+		{codes.OutOfRange, true},
+		{codes.Unimplemented, false},     // server capability/config can change
+		{codes.ResourceExhausted, false}, // receiver backpressure / rate limiting
+		{codes.Unauthenticated, false},   // credentials can be rotated
+		{codes.PermissionDenied, false},  // authorization can change
+		{codes.Unavailable, false},
+	}
+	for _, tc := range cases {
+		if got := permanentGRPC(tc.code); got != tc.permanent {
+			t.Errorf("code %s: permanent=%v, want %v", tc.code, got, tc.permanent)
+		}
 	}
 }

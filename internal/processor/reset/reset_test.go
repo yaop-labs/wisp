@@ -100,8 +100,8 @@ func TestResetIgnoresOutOfOrderBatch(t *testing.T) {
 
 	before := selfobs.ResetReordered.Get()
 	out, _ = p.Process(ctx, tc(990, 100)) // stale: must NOT be read as a reset
-	if got, _ := adjusted(out); got != 990 {
-		t.Errorf("out-of-order point adjusted=%d, want 990 (offset must stay 0)", got)
+	if out.Len() != 0 {
+		t.Errorf("out-of-order point was emitted: %+v", out)
 	}
 	if selfobs.ResetReordered.Get() == before {
 		t.Error("ResetReordered should have incremented for the out-of-order point")
@@ -117,6 +117,34 @@ func TestResetIgnoresOutOfOrderBatch(t *testing.T) {
 	out, _ = p.Process(ctx, tc(5, 400))
 	if got, _ := adjusted(out); got != 1105 { // 5 + carried 1100
 		t.Errorf("genuine reset adjusted=%d, want 1105", got)
+	}
+}
+
+func TestResetDropsOutOfOrderPointAcrossRealReset(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	tc := func(raw int64, ts uint64) model.Batch {
+		return model.Batch{Series: []model.Series{{
+			Name: "c", Type: model.MetricSum, Monotonic: true,
+			Resource: model.Labels{{Name: "service.name", Value: "app"}},
+			Points:   []model.Point{{IntValue: raw, TimeUnixNano: ts}},
+		}}}
+	}
+
+	_, _ = p.Process(ctx, tc(900, 100))
+	newer, _ := p.Process(ctx, tc(10, 300)) // post-reset point wins the worker race
+	if got, _ := adjusted(newer); got != 910 {
+		t.Fatalf("post-reset adjusted=%d, want 910", got)
+	}
+
+	stale, _ := p.Process(ctx, tc(1000, 200)) // pre-reset point arrives too late
+	if stale.Len() != 0 {
+		t.Fatalf("stale pre-reset point was emitted: %+v", stale)
+	}
+
+	next, _ := p.Process(ctx, tc(20, 400))
+	if got, _ := adjusted(next); got != 920 {
+		t.Errorf("counter after stale point adjusted=%d, want 920", got)
 	}
 }
 

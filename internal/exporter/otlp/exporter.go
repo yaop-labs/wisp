@@ -143,12 +143,11 @@ func (t *grpcTransport) send(ctx context.Context, req *colmetricspb.ExportMetric
 
 // permanentGRPC reports gRPC codes that mean the batch itself is bad and will
 // never be accepted, so holding or retrying it is pointless. ResourceExhausted
-// is included because the client raises it for an oversized message (larger than
-// the max send size); wisp does its own backpressure, so a server rate-limit
-// signalled the same way is acceptably treated as permanent rather than looping.
+// is deliberately transient: OTLP servers (including wisp's receiver) use it to
+// signal rate limiting/backpressure as well as message-size limits.
 func permanentGRPC(c codes.Code) bool {
 	switch c {
-	case codes.InvalidArgument, codes.OutOfRange, codes.Unimplemented, codes.ResourceExhausted:
+	case codes.InvalidArgument, codes.OutOfRange:
 		return true
 	default:
 		return false
@@ -221,12 +220,17 @@ func (t *httpTransport) send(ctx context.Context, req *colmetricspb.ExportMetric
 	return nil
 }
 
-// permanentHTTP reports HTTP statuses that mean the request is bad and won't
-// succeed on retry: 4xx client errors other than 408 (timeout) and 429 (rate
-// limit). 5xx are transient (server-side), worth retrying/spooling.
+// permanentHTTP reports HTTP statuses that unambiguously describe a bad payload.
+// Authentication, authorization, routing, conflict, timeout, and rate-limit
+// failures can recover after configuration or server-state changes, so they must
+// remain spooled rather than being discarded.
 func permanentHTTP(code int) bool {
-	return code >= 400 && code < 500 &&
-		code != http.StatusRequestTimeout && code != http.StatusTooManyRequests
+	switch code {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	default:
+		return false
+	}
 }
 
 func (t *httpTransport) close() error { return nil }

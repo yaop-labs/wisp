@@ -7,6 +7,7 @@ package reset
 
 import (
 	"context"
+	"slices"
 	"sync"
 
 	"github.com/yaop-labs/wisp/internal/model"
@@ -42,12 +43,28 @@ func (p *Processor) Process(_ context.Context, b model.Batch) (model.Batch, erro
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	out := b.Series[:0]
 	for si := range b.Series {
 		s := &b.Series[si]
 		if s.Type != model.MetricSum || !s.Monotonic {
+			out = append(out, *s)
 			continue
 		}
+		// OTLP may put several points in one series without promising slice order.
+		// Process those chronologically so an avoidable in-batch reorder does not
+		// turn a real reset into a stale point.
+		slices.SortStableFunc(s.Points, func(a, b model.Point) int {
+			switch {
+			case a.TimeUnixNano < b.TimeUnixNano:
+				return -1
+			case a.TimeUnixNano > b.TimeUnixNano:
+				return 1
+			default:
+				return 0
+			}
+		})
 		key := seriesKey(s)
+		keep := 0
 		for pi := range s.Points {
 			pt := &s.Points[pi]
 			raw := pt.Value()
@@ -58,20 +75,21 @@ func (p *Processor) Process(_ context.Context, b model.Batch) (model.Batch, erro
 					// Tracker is full: pass the point through un-normalized rather
 					// than grow state without bound.
 					selfobs.ResetUntracked.Inc()
+					s.Points[keep] = *pt
+					keep++
 					continue
 				}
 				// First observation of this series: adopt it as the baseline.
 				st = &counterState{lastRaw: raw, lastTime: pt.TimeUnixNano}
 				p.state[key] = st
 			case pt.TimeUnixNano < st.lastTime:
-				// Out-of-order point. The pipeline hands batches to NumCPU workers
-				// off one queue with no per-source ordering, so a newer scrape of
-				// this series can be processed before an older one. Reading
-				// raw < lastRaw as a reset here would carry lastRaw into the offset
-				// permanently (a phantom rate spike in amber that never
-				// self-corrects). Emit with the current offset but let the newer
-				// point keep ownership of the state.
+				// The offset valid at this older timestamp cannot be reconstructed
+				// from the current state: a genuine reset may lie between this point
+				// and lastTime. Applying the current offset can therefore make the
+				// normalized counter decrease in timestamp order. Drop the stale
+				// point and let the newer point keep ownership of the state.
 				selfobs.ResetReordered.Inc()
+				continue
 			default:
 				if raw < st.lastRaw {
 					st.offset += st.lastRaw // reset: carry the pre-reset total forward
@@ -80,8 +98,15 @@ func (p *Processor) Process(_ context.Context, b model.Batch) (model.Batch, erro
 				st.lastTime = pt.TimeUnixNano
 			}
 			setPointValue(pt, raw+st.offset)
+			s.Points[keep] = *pt
+			keep++
+		}
+		s.Points = s.Points[:keep]
+		if keep > 0 {
+			out = append(out, *s)
 		}
 	}
+	b.Series = out
 	return b, nil
 }
 

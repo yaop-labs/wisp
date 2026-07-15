@@ -2,6 +2,7 @@ package spool
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -93,5 +94,33 @@ func TestCleanupTempOnStart(t *testing.T) {
 	defer e.Close()
 	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
 		t.Fatal("leftover .tmp should have been removed on start")
+	}
+}
+
+func TestDirectorySyncFailureKeepsDepthConsistent(t *testing.T) {
+	dir := t.TempDir()
+	in := &gate{}
+	e, err := New(in, Config{Dir: dir, MaxBytes: 1 << 20, DrainInterval: time.Hour}, discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+
+	e.syncDir = func(string) error { return errors.New("injected sync failure") }
+	if err := e.Export(context.Background(), oneBatch); err == nil {
+		t.Fatal("Export should report the directory sync failure")
+	}
+	if e.Count() != 1 || e.Bytes() != batchSize(t) || countFiles(dir) != 1 {
+		t.Fatalf("after sync failure count=%d bytes=%d files=%d, want 1/%d/1",
+			e.Count(), e.Bytes(), countFiles(dir), batchSize(t))
+	}
+
+	// The visible file remains drainable, and removing it must return the cached
+	// depth to zero rather than taking it negative.
+	in.setAllow(1)
+	e.drain(context.Background())
+	if e.Count() != 0 || e.Bytes() != 0 || countFiles(dir) != 0 {
+		t.Fatalf("after drain count=%d bytes=%d files=%d, want 0/0/0",
+			e.Count(), e.Bytes(), countFiles(dir))
 	}
 }
