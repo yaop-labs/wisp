@@ -61,6 +61,25 @@ func TestRegisterGaugeFuncIsIdempotentByName(t *testing.T) {
 	}
 }
 
+func TestHandlerRendersSortedGaugeVector(t *testing.T) {
+	RegisterGaugeVecFunc("wisp_test_vector", "A test vector.", "signal", func() map[string]float64 {
+		return map[string]float64{"metrics": 2, "logs": 1}
+	})
+	body := scrapeSelf(t)
+	for _, want := range []string{
+		"# TYPE wisp_test_vector gauge",
+		"wisp_test_vector{signal=\"logs\"} 1",
+		"wisp_test_vector{signal=\"metrics\"} 2",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+	if strings.Index(body, `signal="logs"`) > strings.Index(body, `signal="metrics"`) {
+		t.Error("gauge vector label values are not sorted")
+	}
+}
+
 func TestCounter(t *testing.T) {
 	var c Counter
 	c.Inc()

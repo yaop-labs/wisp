@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 )
@@ -62,9 +63,15 @@ type gaugeFunc struct {
 	fn         func() float64
 }
 
+type gaugeVecFunc struct {
+	name, help, label string
+	fn                func() map[string]float64
+}
+
 var (
 	gaugeMu    sync.Mutex
 	gaugeFuncs []gaugeFunc
+	gaugeVecs  []gaugeVecFunc
 )
 
 // RegisterGaugeFunc registers a pull-based gauge, or replaces the one with the
@@ -82,6 +89,20 @@ func RegisterGaugeFunc(name, help string, fn func() float64) {
 	gaugeFuncs = append(gaugeFuncs, gaugeFunc{name, help, fn})
 }
 
+// RegisterGaugeVecFunc registers a pull-based gauge with one bounded label.
+// Re-registering a metric name replaces the previous collector.
+func RegisterGaugeVecFunc(name, help, label string, fn func() map[string]float64) {
+	gaugeMu.Lock()
+	defer gaugeMu.Unlock()
+	for i := range gaugeVecs {
+		if gaugeVecs[i].name == name {
+			gaugeVecs[i] = gaugeVecFunc{name, help, label, fn}
+			return
+		}
+	}
+	gaugeVecs = append(gaugeVecs, gaugeVecFunc{name, help, label, fn})
+}
+
 // Handler serves the registered self-metrics in Prometheus text format.
 func Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -94,12 +115,29 @@ func Handler() http.Handler {
 		gaugeMu.Lock()
 		gauges := make([]gaugeFunc, len(gaugeFuncs))
 		copy(gauges, gaugeFuncs)
+		vectors := make([]gaugeVecFunc, len(gaugeVecs))
+		copy(vectors, gaugeVecs)
 		gaugeMu.Unlock()
 		sort.Slice(gauges, func(i, j int) bool { return gauges[i].name < gauges[j].name })
 		for _, g := range gauges {
 			fmt.Fprintf(w, "# HELP %s %s\n", g.name, g.help)
 			fmt.Fprintf(w, "# TYPE %s gauge\n", g.name)
 			fmt.Fprintf(w, "%s %g\n", g.name, g.fn())
+		}
+		sort.Slice(vectors, func(i, j int) bool { return vectors[i].name < vectors[j].name })
+		for _, vector := range vectors {
+			fmt.Fprintf(w, "# HELP %s %s\n", vector.name, vector.help)
+			fmt.Fprintf(w, "# TYPE %s gauge\n", vector.name)
+			values := vector.fn()
+			labels := make([]string, 0, len(values))
+			for value := range values {
+				labels = append(labels, value)
+			}
+			sort.Strings(labels)
+			for _, value := range labels {
+				fmt.Fprintf(w, "%s{%s=%s} %g\n",
+					vector.name, vector.label, strconv.Quote(value), values[value])
+			}
 		}
 	})
 }

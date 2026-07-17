@@ -15,9 +15,11 @@ patch releases when that improves reviewability or operational safety.
 
 ## v0.8.x — durable multi-signal core
 
-- versioned, checksummed, signal-neutral envelope;
-- disk-format migration from metric-only spool records;
-- per-signal quotas, pressure, scheduling, and self-observability;
+- versioned, checksummed, signal-neutral envelope — implemented;
+- disk-format migration from metric-only spool records — implemented;
+- signal-neutral queue, per-signal quotas, pressure, fair scheduling, and
+  self-observability — implemented in the core; config exposure follows with
+  the first additional signal;
 - OTLP metrics, logs, and traces receiver/exporter registration;
 - payload splitting and permanent/transient response semantics.
 

@@ -9,12 +9,17 @@ versioning without treating `v1.0.0` as a schedule target.
 
 - versioned, checksummed, signal-neutral durability envelope with bounded
   decoding and open signal kinds;
-- documented compatibility path for legacy metric `.batch` spool files.
+- documented compatibility path for legacy metric `.batch` spool files;
+- signal-neutral durability queue with per-signal depth, optional byte limits,
+  pressure hysteresis, fair drain, and labelled self-observability gauges.
 
 ### Changed
 
 - new metric spool writes use `.envelope` records while existing `.batch`
-  records remain readable and drain normally.
+  records remain readable and drain normally;
+- the metric pipeline now uses a compatibility adapter over the generic queue;
+- transient drain failures block only their signal, while permanent live
+  rejections return immediately instead of consuming spool capacity.
 
 ## v0.7.0 — 2026-07-17
 

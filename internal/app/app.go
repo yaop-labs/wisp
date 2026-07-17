@@ -205,6 +205,31 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			}
 			return 0
 		})
+		selfobs.RegisterGaugeVecFunc("wisp_spool_signal_bytes", "Current on-disk spool size by signal in bytes.", "signal", func() map[string]float64 {
+			out := make(map[string]float64)
+			for kind, depth := range sp.DepthBySignal() {
+				out[string(kind)] = float64(depth.Bytes)
+			}
+			return out
+		})
+		selfobs.RegisterGaugeVecFunc("wisp_spool_signal_envelopes", "Current number of on-disk envelopes by signal.", "signal", func() map[string]float64 {
+			out := make(map[string]float64)
+			for kind, depth := range sp.DepthBySignal() {
+				out[string(kind)] = float64(depth.Count)
+			}
+			return out
+		})
+		selfobs.RegisterGaugeVecFunc("wisp_spool_signal_pressure_active", "1 when a signal is under global or signal-specific spool pressure.", "signal", func() map[string]float64 {
+			out := make(map[string]float64)
+			for kind, depth := range sp.DepthBySignal() {
+				if depth.UnderPressure {
+					out[string(kind)] = 1
+				} else {
+					out[string(kind)] = 0
+				}
+			}
+			return out
+		})
 		logger.Info("spool enabled", "dir", cfg.Exporter.Spool.Dir, "max_bytes", cfg.Exporter.Spool.MaxBytes, "max_age", cfg.Exporter.Spool.MaxAge.Std())
 	}
 	p.AddExporter(exporter)

@@ -58,6 +58,31 @@ Unsupported signal kinds or payload schemas are never decoded as metrics.
 Corrupt/checksum-invalid records follow the existing corrupt-spool path and
 cannot wedge newer entries.
 
+## Signal-neutral queue
+
+The durability core accepts validated envelopes through a signal-neutral
+sender interface. The existing metric `pipeline.Exporter` is now an adapter:
+it owns gob conversion, while the queue never interprets a current-format
+payload.
+
+New filenames include the signal kind for O(1) classification during steady
+state. Records written by the first v1 implementation did not include that
+suffix; they are classified from their checksummed header on startup and remain
+fully drainable.
+
+The queue maintains global depth plus independent depth, optional byte limits,
+and pressure hysteresis for each signal. Capacity eviction is oldest-first.
+Drain is FIFO within each signal and round-robin across signals. A transient
+failure blocks only that signal for the current pass, so a metrics outage cannot
+strand logs (or the reverse). A permanent rejection is not admitted on the
+live path and is quarantined if discovered while draining an older record.
+
+Current self-observability retains the original aggregate gauges and adds:
+
+- `wisp_spool_signal_bytes{signal=...}`;
+- `wisp_spool_signal_envelopes{signal=...}`;
+- `wisp_spool_signal_pressure_active{signal=...}`.
+
 ## Resource identity
 
 The envelope duplicates only a bounded allowlist of correlation and future

@@ -52,7 +52,9 @@ generation; they require a restart.
 The on-disk spool is bounded by default and fsyncs accepted batches before
 acknowledging durability. Backpressure is applied before the spool fills.
 Malformed or permanently rejected batches are quarantined from the drain path
-so they cannot block newer telemetry.
+so they cannot block newer telemetry. The disk queue is signal-neutral: it
+tracks per-signal depth and pressure and drains signals fairly, so an outage on
+one telemetry path cannot head-of-line block another.
 
 ## Security
 
