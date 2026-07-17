@@ -83,7 +83,10 @@ func (c *GyreComponent) Close(ctx context.Context) error {
 	c.mu.Lock()
 	c.state = gyre.StateStopping
 	c.mu.Unlock()
-	err := c.app.Shutdown(ctx)
+	var err error
+	if c.app != nil && c.app.pipeline != nil {
+		err = c.app.Shutdown(ctx)
+	}
 	c.mu.Lock()
 	if err != nil {
 		c.state = gyre.StateFailed

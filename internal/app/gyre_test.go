@@ -26,3 +26,9 @@ func TestGyreComponentInitialStatus(t *testing.T) {
 		t.Fatal("expected not ready")
 	}
 }
+
+func TestGyreConformance(t *testing.T) {
+	if err := gyre.ConformanceCheck(context.Background(), NewGyreComponent(&App{})); err != nil {
+		t.Fatal(err)
+	}
+}
