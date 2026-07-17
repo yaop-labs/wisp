@@ -3,12 +3,15 @@ module github.com/yaop-labs/wisp
 go 1.26.5
 
 require (
+	github.com/yaop-labs/gyre v0.0.0
 	github.com/yaop-labs/reef v0.3.0
 	go.opentelemetry.io/proto/otlp v1.10.0
 	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+replace github.com/yaop-labs/gyre => ../gyre
 
 require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
