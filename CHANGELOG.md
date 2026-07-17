@@ -5,6 +5,17 @@ versioning without treating `v1.0.0` as a schedule target.
 
 ## Unreleased
 
+### Added
+
+- versioned, checksummed, signal-neutral durability envelope with bounded
+  decoding and open signal kinds;
+- documented compatibility path for legacy metric `.batch` spool files.
+
+### Changed
+
+- new metric spool writes use `.envelope` records while existing `.batch`
+  records remain readable and drain normally.
+
 ## v0.7.0 — 2026-07-17
 
 ### Added

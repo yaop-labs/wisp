@@ -35,3 +35,4 @@ go.work.sum
 # gob-encoded batch files — local runtime data, never committed.
 /wisp-spool/
 *.batch
+*.envelope

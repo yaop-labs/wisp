@@ -56,7 +56,7 @@ func TestSpoolWriteFailureMarksUnhealthy(t *testing.T) {
 	}
 }
 
-// TestDrainCountsCorruptFile: an undecodable .batch file (torn by a crash
+// TestDrainCountsCorruptFile: an undecodable legacy .batch file (torn by a crash
 // mid-write) is dropped on drain and counted distinctly from capacity evictions.
 func TestDrainCountsCorruptFile(t *testing.T) {
 	dir := t.TempDir()

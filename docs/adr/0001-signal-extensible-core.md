@@ -50,3 +50,10 @@ the durability envelope.
   metric-only spool files and include crash/restart tests.
 - No profiling config, BPF sampler, or symbolizer is implemented until its own
   design and release milestone are accepted.
+
+## Implementation note
+
+The v1 durability envelope and legacy metric-spool adapter are specified in
+[spool-envelope-v1.md](../spool-envelope-v1.md). The pipeline itself remains
+metric-typed until the next migration step; the adapter boundary prevents that
+temporary representation from becoming the new disk contract.

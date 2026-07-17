@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/yaop-labs/wisp/internal/model"
+	"github.com/yaop-labs/wisp/internal/signal"
 )
 
 type toggle struct {
@@ -122,5 +124,108 @@ func TestSpoolSurvivesRestart(t *testing.T) {
 	waitFor(t, func() bool { return countFiles(dir) == 0 }, "leftover spool to drain after restart")
 	if up.sent() < 1 {
 		t.Error("restarted agent should re-send the leftover batch")
+	}
+}
+
+func TestEnvelopeCodecRoundTrip(t *testing.T) {
+	batch := model.Batch{Series: append([]model.Series(nil), oneBatch.Series...)}
+	batch.Series[0].Resource = model.Labels{
+		{Name: "service.name", Value: "checkout"},
+		{Name: "host.id", Value: "node-1"},
+	}
+	data, err := encode(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !signal.IsRecord(data) {
+		t.Fatal("new spool writes must use the envelope format")
+	}
+	envelope, err := signal.UnmarshalBinary(data, signal.DefaultMaxPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Kind != signal.Metrics || envelope.Schema != metricSchema {
+		t.Fatalf("envelope=%+v", envelope)
+	}
+	if envelope.Resource["service.name"] != "checkout" || envelope.Resource["host.id"] != "node-1" {
+		t.Fatalf("resource=%v", envelope.Resource)
+	}
+	got, err := decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, batch) {
+		t.Fatalf("round trip mismatch: got=%+v want=%+v", got, batch)
+	}
+}
+
+func TestLegacyBatchDrainsAfterUpgrade(t *testing.T) {
+	dir := t.TempDir()
+	data, err := encodeLegacy(oneBatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "00000000000000000001-000001"+legacyFileSuffix)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	up := &toggle{}
+	e, err := New(up, Config{Dir: dir, MaxAge: -1, DrainInterval: 20 * time.Millisecond}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	waitFor(t, func() bool {
+		_, err := os.Stat(path)
+		return os.IsNotExist(err)
+	}, "legacy batch to drain")
+	if up.sent() != 1 {
+		t.Fatalf("legacy sends=%d, want 1", up.sent())
+	}
+}
+
+func TestMetricAdapterRejectsOtherSignalKinds(t *testing.T) {
+	envelope, err := signal.New(signal.Logs, "otlp.logs/v1", "application/x-protobuf", []byte("logs"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := envelope.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decode(data); err == nil {
+		t.Fatal("metric adapter accepted a logs envelope")
+	}
+}
+
+func TestEnvelopeOmitsAmbiguousOrInvalidResourceIdentity(t *testing.T) {
+	tests := map[string]model.Batch{
+		"mixed": {
+			Series: []model.Series{
+				{Name: "a", Resource: model.Labels{{Name: "service.name", Value: "one"}}, Points: []model.Point{{IntValue: 1}}},
+				{Name: "b", Resource: model.Labels{{Name: "service.name", Value: "two"}}, Points: []model.Point{{IntValue: 2}}},
+			},
+		},
+		"invalid": {
+			Series: []model.Series{
+				{Name: "a", Resource: model.Labels{{Name: "service.name", Value: "bad\nvalue"}}, Points: []model.Point{{IntValue: 1}}},
+			},
+		},
+	}
+	for name, batch := range tests {
+		t.Run(name, func(t *testing.T) {
+			data, err := encode(batch)
+			if err != nil {
+				t.Fatalf("telemetry admission must not fail because optional envelope identity is unusable: %v", err)
+			}
+			envelope, err := signal.UnmarshalBinary(data, signal.DefaultMaxPayload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(envelope.Resource) != 0 {
+				t.Fatalf("resource=%v, want omitted", envelope.Resource)
+			}
+		})
 	}
 }

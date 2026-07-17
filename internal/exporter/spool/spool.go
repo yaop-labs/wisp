@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,13 +22,51 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/yaop-labs/wisp/internal/model"
 	"github.com/yaop-labs/wisp/internal/pipeline"
 	"github.com/yaop-labs/wisp/internal/selfobs"
+	"github.com/yaop-labs/wisp/internal/signal"
 )
 
-const fileSuffix = ".batch"
+const (
+	fileSuffix       = ".envelope"
+	legacyFileSuffix = ".batch"
+	metricSchema     = "wisp.metric-batch.gob/v1"
+	metricEncoding   = "application/x-gob"
+)
+
+var envelopeIdentityKeys = map[string]struct{}{
+	"service.name":                       {},
+	"service.namespace":                  {},
+	"service.instance.id":                {},
+	"service.version":                    {},
+	"host.id":                            {},
+	"host.name":                          {},
+	"process.pid":                        {},
+	"process.executable.name":            {},
+	"process.executable.path":            {},
+	"process.executable.build_id.gnu":    {},
+	"process.executable.build_id.go":     {},
+	"process.runtime.name":               {},
+	"process.runtime.version":            {},
+	"container.id":                       {},
+	"container.name":                     {},
+	"k8s.cluster.name":                   {},
+	"k8s.namespace.name":                 {},
+	"k8s.node.name":                      {},
+	"k8s.pod.name":                       {},
+	"k8s.pod.uid":                        {},
+	"k8s.container.name":                 {},
+	"k8s.deployment.name":                {},
+	"k8s.statefulset.name":               {},
+	"k8s.daemonset.name":                 {},
+	"k8s.job.name":                       {},
+	"wisp.profile.executable.build_id":   {},
+	"wisp.profile.executable.debug_name": {},
+}
 
 // Durability bounds applied when the config leaves them unset (0), so an enabled
 // spool is always bounded and self-expiring rather than able to fill the disk.
@@ -125,7 +164,7 @@ func New(inner pipeline.Exporter, cfg Config, logger *slog.Logger) (*Exporter, e
 }
 
 // cleanupTemp removes leftover *.tmp files: a crash mid-write leaves a temp file
-// that was never renamed to a final ".batch", so it holds a partial (torn)
+// that was never renamed to a final envelope, so it holds a partial (torn)
 // record. Dropping them keeps the queue free of undecodable junk.
 func (e *Exporter) cleanupTemp() {
 	entries, err := os.ReadDir(e.dir)
@@ -244,7 +283,7 @@ func (e *Exporter) enqueue(b model.Batch) error {
 
 // writeFileSync writes data to path and fsyncs the file before returning, so a
 // crash after enqueue cannot leave a zero-length or torn file that decodes to
-// garbage on restart. Mode 0o600: spool files hold metric payloads.
+// garbage on restart. Mode 0o600: spool files hold telemetry payloads.
 func writeFileSync(path string, data []byte) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -385,7 +424,7 @@ func (e *Exporter) drain(ctx context.Context) {
 }
 
 // timestampOf extracts the unix-nanos prefix from a spool filename
-// ("<nanos>-<seq>.batch"). Returns false if the name isn't in that form.
+// ("<nanos>-<seq>.<format>"). Returns false if the name isn't in that form.
 func timestampOf(path string) (int64, bool) {
 	name := filepath.Base(path)
 	dash := strings.IndexByte(name, '-')
@@ -412,7 +451,8 @@ func (e *Exporter) sortedFiles() []spoolFile {
 	}
 	var files []spoolFile
 	for _, ent := range entries {
-		if ent.IsDir() || filepath.Ext(ent.Name()) != fileSuffix {
+		ext := filepath.Ext(ent.Name())
+		if ent.IsDir() || (ext != fileSuffix && ext != legacyFileSuffix) {
 			continue
 		}
 		info, err := ent.Info()
@@ -451,6 +491,18 @@ func (e *Exporter) Close() error {
 }
 
 func encode(b model.Batch) ([]byte, error) {
+	payload, err := encodeLegacy(b)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := signal.New(signal.Metrics, metricSchema, metricEncoding, payload, commonResource(b))
+	if err != nil {
+		return nil, err
+	}
+	return envelope.MarshalBinary()
+}
+
+func encodeLegacy(b model.Batch) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := gob.NewEncoder(&buf).Encode(b); err != nil {
 		return nil, err
@@ -459,7 +511,68 @@ func encode(b model.Batch) ([]byte, error) {
 }
 
 func decode(data []byte) (model.Batch, error) {
+	if !signal.IsRecord(data) {
+		return decodeLegacy(data)
+	}
+	envelope, err := signal.UnmarshalBinary(data, signal.DefaultMaxPayload)
+	if err != nil {
+		return model.Batch{}, err
+	}
+	if envelope.Kind != signal.Metrics {
+		return model.Batch{}, fmt.Errorf("spool: unsupported signal kind %q", envelope.Kind)
+	}
+	if envelope.Schema != metricSchema || envelope.Encoding != metricEncoding {
+		return model.Batch{}, fmt.Errorf(
+			"spool: unsupported metrics payload schema=%q encoding=%q",
+			envelope.Schema,
+			envelope.Encoding,
+		)
+	}
+	return decodeLegacy(envelope.Payload)
+}
+
+func decodeLegacy(data []byte) (model.Batch, error) {
 	var b model.Batch
 	err := gob.NewDecoder(bytes.NewReader(data)).Decode(&b)
 	return b, err
+}
+
+// commonResource returns identity shared by every series in a metric batch.
+// Mixed-resource batches keep identity in the payload and leave the envelope
+// resource empty rather than publishing a misleading subset.
+func commonResource(b model.Batch) map[string]string {
+	if len(b.Series) == 0 {
+		return nil
+	}
+	first, ok := identityFromLabels(b.Series[0].Resource)
+	if !ok {
+		return nil
+	}
+	for i := 1; i < len(b.Series); i++ {
+		resource, valid := identityFromLabels(b.Series[i].Resource)
+		if !valid || !maps.Equal(first, resource) {
+			return nil
+		}
+	}
+	return first
+}
+
+func identityFromLabels(labels model.Labels) (map[string]string, bool) {
+	if len(labels) == 0 {
+		return nil, true
+	}
+	out := make(map[string]string, len(labels))
+	for _, label := range labels {
+		if _, keep := envelopeIdentityKeys[label.Name]; !keep {
+			continue
+		}
+		if _, duplicate := out[label.Name]; duplicate {
+			return nil, false
+		}
+		if len(label.Value) > 4096 || !utf8.ValidString(label.Value) || strings.IndexFunc(label.Value, unicode.IsControl) >= 0 {
+			return nil, false
+		}
+		out[label.Name] = label.Value
+	}
+	return out, true
 }
