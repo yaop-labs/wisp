@@ -12,7 +12,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yaop-labs/gyre"
+
 	"github.com/yaop-labs/wisp/internal/app"
+	"github.com/yaop-labs/wisp/internal/buildinfo"
 	"github.com/yaop-labs/wisp/internal/config"
 )
 
@@ -25,13 +28,18 @@ func main() {
 
 func run() error {
 	configPath := flag.String("config", "", "path to YAML config (required)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Printf("wisp %s (commit=%s, built=%s)\n", buildinfo.Version, buildinfo.Commit, buildinfo.Date)
+		return nil
+	}
 	if *configPath == "" {
 		return fmt.Errorf("--config is required; refusing to start an unconfigured agent")
 	}
 
-	cfg, err := config.Load(*configPath)
+	cfg, _, err := config.LoadDocument(*configPath)
 	if err != nil {
 		return err
 	}
@@ -39,7 +47,7 @@ func run() error {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: parseLevel(cfg.Agent.LogLevel),
 	}))
-	logger.Info("loaded config", "path", *configPath)
+	logger.Info("loaded config", "path", *configPath, "version", buildinfo.Version, "commit", buildinfo.Commit)
 	logger.Info("sources enabled", "sources", strings.Join(cfg.Sources.Enabled(), ","))
 	logger.Info("egress", "endpoint", cfg.Exporter.OTLP.Endpoint, "protocol", cfg.Exporter.OTLP.Protocol)
 
@@ -47,11 +55,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	component := app.NewGyreComponent(a, buildinfo.Version)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := a.Start(ctx); err != nil {
+	if err := component.Start(ctx); err != nil {
 		return err
 	}
 	logger.Info("wisp started")
@@ -66,16 +75,23 @@ func run() error {
 			case <-ctx.Done():
 				return
 			case <-hup:
-				newCfg, err := config.Load(*configPath)
+				_, spec, err := config.LoadDocument(*configPath)
 				if err != nil {
 					logger.Error("reload: failed to load config, keeping current", "err", err)
 					continue
 				}
-				if err := a.Reload(newCfg); err != nil {
+				generation := component.Status().Generation + 1
+				result, err := component.Reload(ctx, gyre.Envelope{
+					APIVersion: "gyre/v1",
+					Kind:       "Wisp",
+					Generation: generation,
+					Spec:       spec,
+				})
+				if err != nil {
 					logger.Error("reload failed", "err", err)
 					continue
 				}
-				logger.Info("config reloaded", "path", *configPath)
+				logger.Info("config reloaded", "path", *configPath, "generation", result.Generation, "changed", result.Changed)
 			}
 		}
 	}()
@@ -85,7 +101,7 @@ func run() error {
 
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer stopCancel()
-	if err := a.Shutdown(stopCtx); err != nil {
+	if err := component.Close(stopCtx); err != nil {
 		logger.Error("shutdown error", "err", err)
 		return err
 	}

@@ -1,21 +1,66 @@
-# wisp
+# Wisp
 
-Lightweight, powerful edge observability agent for the yaop stack. One binary
-collects metrics from every side — **pull** (Prometheus/OpenMetrics scrape),
-**push** (OTLP receive), **probe** (host `/proc`,`/sys` + eBPF) — processes them
-at the edge, and ships them over OTLP to [coral](../collector), which enriches
-and stores them in [amber](../amber).
+Wisp is the edge observability agent for the YAOP stack. It collects and
+processes telemetry close to its source, persists batches across downstream
+outages, and exports them to Coral over OTLP.
 
-Not yet: the eBPF zero-instrumentation probe — the source detects host
-capability and no-ops until the BPF backend is compiled in.
+The current implementation is metrics-first:
 
-## Quick start
+- Prometheus/OpenMetrics scraping with static, file, DNS, and Kubernetes
+  discovery;
+- OTLP metrics receive over gRPC and HTTP/protobuf;
+- Linux host metrics from `/proc`;
+- relabel, counter-reset, and cardinality processors;
+- OTLP gRPC/HTTP export with retry, bounded crash-safe spool, and backpressure;
+- Reef TLS, mTLS, and bearer authentication on ingress and egress;
+- Gyre lifecycle, readiness, status, and generation-aware reload.
+
+Logs, traces, and the actual eBPF backend are planned, not silently simulated.
+See [the roadmap](docs/ROADMAP.md) and
+[the signal extensibility ADR](docs/adr/0001-signal-extensible-core.md).
+
+## Build and test
+
+Wisp requires the Go version declared in `go.mod`.
 
 ```bash
 make build
+./wisp -version
+make test
+make lint
+```
+
+Run the agent with an explicit configuration:
+
+```bash
 ./wisp -config configs/wisp.example.yaml
 ```
 
+The self-observability listener exposes:
+
+- `GET /metrics` — Prometheus metrics;
+- `GET /healthz` — cheap process liveness;
+- `GET /readyz` — dependency and durability readiness;
+- `GET /status` — Gyre component state, version, and config generation.
+
+`SIGHUP` reloads the safe scrape surface. Listener, exporter, spool, processor,
+resource, and security changes are rejected without advancing the active
+generation; they require a restart.
+
+## Delivery semantics
+
+The on-disk spool is bounded by default and fsyncs accepted batches before
+acknowledging durability. Backpressure is applied before the spool fills.
+Malformed or permanently rejected batches are quarantined from the drain path
+so they cannot block newer telemetry.
+
+## Security
+
+Reef owns the transport-security contract. Non-loopback plaintext listeners
+and exporters require an explicit insecure opt-in. Bearer credentials over
+plaintext require a separate danger opt-in. Secrets are never included in
+Gyre status or normal logs.
+
 ## License
 
-Apache License 2.0
+Apache License 2.0.

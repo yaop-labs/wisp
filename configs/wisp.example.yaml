@@ -4,7 +4,8 @@
 agent:
   log_level: info
   self_metrics:
-    endpoint: "0.0.0.0:9090" # wisp's own Prometheus /metrics
+    # Prometheus /metrics plus Gyre /healthz, /readyz, and /status.
+    endpoint: "0.0.0.0:9090"
 
 sources:
   # Node metrics from /proc, /sys: cpu, memory, network, load.
