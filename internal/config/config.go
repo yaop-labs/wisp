@@ -104,10 +104,12 @@ type FileSDConfig struct {
 
 // OTLPSource configures the OTLP receiver (apps push to wisp as a local gateway).
 type OTLPSource struct {
-	GRPC string                `yaml:"grpc"`
-	HTTP string                `yaml:"http"`
-	TLS  *tlsconf.ServerConfig `yaml:"tls"`
-	Auth *bearer.ServerConfig  `yaml:"auth"`
+	GRPC                           string                `yaml:"grpc"`
+	HTTP                           string                `yaml:"http"`
+	TLS                            *tlsconf.ServerConfig `yaml:"tls"`
+	Auth                           *bearer.ServerConfig  `yaml:"auth"`
+	Insecure                       bool                  `yaml:"insecure"`
+	DangerAllowBearerOverPlaintext bool                  `yaml:"danger_allow_bearer_over_plaintext"`
 }
 
 // EBPFSource configures kernel-side probes (Linux-only, requires CAP_BPF).
@@ -165,13 +167,15 @@ type ExporterConfig struct {
 
 // OTLPExporter configures the OTLP exporter to the collector (or amber directly).
 type OTLPExporter struct {
-	Endpoint string                `yaml:"endpoint"`
-	Protocol string                `yaml:"protocol"` // "grpc" | "http"
-	Timeout  Duration              `yaml:"timeout"`
-	Retry    RetryConfig           `yaml:"retry"`
-	TLS      *tlsconf.ClientConfig `yaml:"tls"`
-	Auth     *bearer.ClientConfig  `yaml:"auth"`
-	Headers  map[string]string     `yaml:"headers"` // additional non-auth headers
+	Endpoint                       string                `yaml:"endpoint"`
+	Protocol                       string                `yaml:"protocol"` // "grpc" | "http"
+	Timeout                        Duration              `yaml:"timeout"`
+	Retry                          RetryConfig           `yaml:"retry"`
+	TLS                            *tlsconf.ClientConfig `yaml:"tls"`
+	Auth                           *bearer.ClientConfig  `yaml:"auth"`
+	Insecure                       bool                  `yaml:"insecure"`
+	DangerAllowBearerOverPlaintext bool                  `yaml:"danger_allow_bearer_over_plaintext"`
+	Headers                        map[string]string     `yaml:"headers"` // additional non-auth headers
 }
 
 // RetryConfig configures exporter retries.

@@ -39,6 +39,8 @@ sources:
   # otlp:
   #   grpc: "0.0.0.0:4317"
   #   http: "0.0.0.0:4318"
+  #   # Without TLS, a non-loopback/wildcard listener additionally requires:
+  #   # insecure: true
   #   tls:                       # secure the receiver (mTLS when client_ca_file set)
   #     enabled: true
   #     cert_file: /etc/wisp/server.crt
@@ -49,6 +51,8 @@ sources:
   #     bearer:                             # Reef named credentials
   #       - name: app-sdk
   #         token_env: WISP_INGEST_KEY      # also: token_file or token
+  #   # Bearer over plaintext is rejected even on loopback. Emergency/dev-only:
+  #   # danger_allow_bearer_over_plaintext: true
 
   # Kernel-side RED/L7 metrics without instrumenting the app. Linux-only, CAP_BPF.
   # ebpf:
@@ -81,6 +85,8 @@ exporter:
     #   key_file: /etc/wisp/client.key
     # auth:                     # Reef injects Authorization over HTTP and gRPC
     #   token_env: WISP_EGRESS_KEY         # also: token_file or token
+    # # For non-loopback plaintext set insecure: true. Bearer over plaintext
+    # # additionally requires danger_allow_bearer_over_plaintext: true.
     # headers:                  # additional headers; values are never logged
     #   x-tenant: production
     retry:

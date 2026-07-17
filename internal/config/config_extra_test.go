@@ -183,3 +183,30 @@ func TestAnyEnabled(t *testing.T) {
 		t.Error("otlp source should count as enabled")
 	}
 }
+
+func TestEdgePolicyFlagsDecode(t *testing.T) {
+	cfg, err := Parse([]byte(`
+sources:
+  otlp:
+    grpc: "0.0.0.0:4317"
+    insecure: true
+    danger_allow_bearer_over_plaintext: true
+exporter:
+  otlp:
+    endpoint: "coral.internal:4317"
+    insecure: true
+    danger_allow_bearer_over_plaintext: true
+resource:
+  attributes:
+    service.name: wisp
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Sources.OTLP.Insecure || !cfg.Sources.OTLP.DangerAllowBearerOverPlaintext {
+		t.Fatalf("receiver edge flags not decoded: %+v", cfg.Sources.OTLP)
+	}
+	if !cfg.Exporter.OTLP.Insecure || !cfg.Exporter.OTLP.DangerAllowBearerOverPlaintext {
+		t.Fatalf("exporter edge flags not decoded: %+v", cfg.Exporter.OTLP)
+	}
+}

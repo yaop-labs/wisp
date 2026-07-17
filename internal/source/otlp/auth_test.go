@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +30,8 @@ func TestReceiverBearerAuth(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	r := mustReceiver(t, Options{
 		GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0",
-		Auth: &bearer.ServerConfig{Bearer: []bearer.Key{{Name: "test-client", Token: "s3cr3t"}}},
+		Auth:                           &bearer.ServerConfig{Bearer: []bearer.Key{{Name: "test-client", Token: "s3cr3t"}}},
+		DangerAllowBearerOverPlaintext: true,
 	}, logger)
 	ctx := t.Context()
 	go func() {
@@ -92,7 +94,8 @@ func TestReceiverBearerAuth(t *testing.T) {
 	// Wisp's exporter uses the same Reef client auth contract over gRPC.
 	e, err := exp.New(exp.Config{
 		Endpoint: r.GRPCAddr(), Protocol: "grpc", Timeout: 3 * time.Second,
-		Auth: &bearer.ClientConfig{Token: "s3cr3t"},
+		Auth:                           &bearer.ClientConfig{Token: "s3cr3t"},
+		DangerAllowBearerOverPlaintext: true,
 	}, logger)
 	if err != nil {
 		t.Fatal(err)
@@ -100,5 +103,19 @@ func TestReceiverBearerAuth(t *testing.T) {
 	defer e.Close()
 	if err := exportOne(e); err != nil {
 		t.Fatalf("reef-authenticated exporter: %v", err)
+	}
+}
+
+func TestReceiverEdgePolicyRejectsUnsafePlaintext(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if _, err := New(Options{GRPCAddr: "0.0.0.0:4317"}, logger); err == nil ||
+		!strings.Contains(err.Error(), "not a literal loopback") {
+		t.Fatalf("external plaintext must require insecure opt-in, got %v", err)
+	}
+	if _, err := New(Options{
+		GRPCAddr: "127.0.0.1:4317",
+		Auth:     &bearer.ServerConfig{Bearer: []bearer.Key{{Name: "app", Token: "secret"}}},
+	}, logger); err == nil || !strings.Contains(err.Error(), "bearer auth over plaintext") {
+		t.Fatalf("plaintext bearer must require dedicated danger opt-in, got %v", err)
 	}
 }

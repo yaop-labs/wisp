@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,10 +31,10 @@ func TestNewProtocolSelection(t *testing.T) {
 		t.Error("unknown protocol should error")
 	}
 	if _, err := New(Config{
-		Endpoint: "x:4317", Auth: &bearer.ClientConfig{Token: "reef"},
-		Headers: map[string]string{"Authorization": "Bearer legacy"},
+		Endpoint: "x:4317",
+		Headers:  map[string]string{"Authorization": "Bearer legacy"},
 	}, discardLog()); err == nil {
-		t.Error("auth and headers.authorization together should error")
+		t.Error("headers.authorization must be rejected in favor of Reef auth")
 	}
 	for _, p := range []string{"", "grpc", "http"} {
 		e, err := New(Config{Endpoint: "127.0.0.1:4317", Protocol: p}, discardLog())
@@ -42,6 +43,24 @@ func TestNewProtocolSelection(t *testing.T) {
 		}
 		_ = e.Close()
 	}
+}
+
+func TestExporterEdgePolicyRejectsUnsafePlaintext(t *testing.T) {
+	if _, err := New(Config{Endpoint: "coral.internal:4317"}, discardLog()); err == nil ||
+		!strings.Contains(err.Error(), "not a literal loopback") {
+		t.Fatalf("external plaintext must require insecure opt-in, got %v", err)
+	}
+	if _, err := New(Config{
+		Endpoint: "127.0.0.1:4317",
+		Auth:     &bearer.ClientConfig{Token: "secret"},
+	}, discardLog()); err == nil || !strings.Contains(err.Error(), "bearer auth over plaintext") {
+		t.Fatalf("plaintext bearer must require dedicated danger opt-in, got %v", err)
+	}
+	e, err := New(Config{Endpoint: "coral.internal:4317", Insecure: true}, discardLog())
+	if err != nil {
+		t.Fatalf("explicit external plaintext should materialize: %v", err)
+	}
+	_ = e.Close()
 }
 
 func TestToRequestGroupsTwoResources(t *testing.T) {
@@ -84,7 +103,8 @@ func TestHTTPTransportSuccessWithHeaders(t *testing.T) {
 
 	// Endpoint without /v1/metrics must be normalized to it.
 	e, err := New(Config{Endpoint: srv.URL, Protocol: "http", Timeout: 2 * time.Second,
-		Auth: &bearer.ClientConfig{Token: "tok"}, Headers: map[string]string{"x-tenant": "test"}}, discardLog())
+		Auth: &bearer.ClientConfig{Token: "tok"}, DangerAllowBearerOverPlaintext: true,
+		Headers: map[string]string{"x-tenant": "test"}}, discardLog())
 	if err != nil {
 		t.Fatal(err)
 	}

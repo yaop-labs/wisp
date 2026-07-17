@@ -103,26 +103,17 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		}},
 		{"otlp", cfg.Sources.OTLP != nil, func() (pipeline.Source, error) {
 			oc := cfg.Sources.OTLP
-			if warnings, err := oc.TLS.Validate(); err != nil {
-				return nil, fmt.Errorf("receiver reef tls: %w", err)
-			} else {
-				for _, warning := range warnings {
-					logger.Warn("reef configuration warning", "edge", "otlp-receiver", "warning", warning)
-				}
-			}
-			if warnings, err := oc.Auth.Validate(); err != nil {
-				return nil, fmt.Errorf("receiver reef auth: %w", err)
-			} else {
-				for _, warning := range warnings {
-					logger.Warn("reef configuration warning", "edge", "otlp-receiver", "warning", warning)
-				}
-			}
 			logger.Info("otlp receive source enabled",
 				"grpc", oc.GRPC, "http", oc.HTTP,
 				"tls", oc.TLS != nil && oc.TLS.Enabled, "mtls", oc.TLS != nil && oc.TLS.ClientCAFile != "",
 				"auth", oc.Auth != nil && len(oc.Auth.Bearer) > 0)
 			return otlprecv.New(otlprecv.Options{
-				GRPCAddr: oc.GRPC, HTTPAddr: oc.HTTP, TLS: oc.TLS, Auth: oc.Auth,
+				GRPCAddr:                       oc.GRPC,
+				HTTPAddr:                       oc.HTTP,
+				TLS:                            oc.TLS,
+				Auth:                           oc.Auth,
+				Insecure:                       oc.Insecure,
+				DangerAllowBearerOverPlaintext: oc.DangerAllowBearerOverPlaintext,
 			}, logger)
 		}},
 		{"ebpf", cfg.Sources.EBPF != nil, func() (pipeline.Source, error) {
@@ -151,27 +142,15 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		}
 	}
 
-	if warnings, err := cfg.Exporter.OTLP.TLS.Validate(); err != nil {
-		return nil, fmt.Errorf("exporter reef tls: %w", err)
-	} else {
-		for _, warning := range warnings {
-			logger.Warn("reef configuration warning", "edge", "otlp-exporter", "warning", warning)
-		}
-	}
-	if warnings, err := cfg.Exporter.OTLP.Auth.Validate(); err != nil {
-		return nil, fmt.Errorf("exporter reef auth: %w", err)
-	} else {
-		for _, warning := range warnings {
-			logger.Warn("reef configuration warning", "edge", "otlp-exporter", "warning", warning)
-		}
-	}
 	otlpExp, err := otlpexp.New(otlpexp.Config{
-		Endpoint: cfg.Exporter.OTLP.Endpoint,
-		Protocol: cfg.Exporter.OTLP.Protocol,
-		Timeout:  cfg.Exporter.OTLP.Timeout.Std(),
-		TLS:      cfg.Exporter.OTLP.TLS,
-		Auth:     cfg.Exporter.OTLP.Auth,
-		Headers:  cfg.Exporter.OTLP.Headers,
+		Endpoint:                       cfg.Exporter.OTLP.Endpoint,
+		Protocol:                       cfg.Exporter.OTLP.Protocol,
+		Timeout:                        cfg.Exporter.OTLP.Timeout.Std(),
+		TLS:                            cfg.Exporter.OTLP.TLS,
+		Auth:                           cfg.Exporter.OTLP.Auth,
+		Insecure:                       cfg.Exporter.OTLP.Insecure,
+		DangerAllowBearerOverPlaintext: cfg.Exporter.OTLP.DangerAllowBearerOverPlaintext,
+		Headers:                        cfg.Exporter.OTLP.Headers,
 	}, logger)
 	if err != nil {
 		return nil, err
