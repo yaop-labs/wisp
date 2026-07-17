@@ -5,6 +5,8 @@ versioning without treating `v1.0.0` as a schedule target.
 
 ## Unreleased
 
+## v0.7.0 — 2026-07-17
+
 ### Added
 
 - Gyre operational endpoints and generation-aware runtime reload;
@@ -17,9 +19,8 @@ versioning without treating `v1.0.0` as a schedule target.
 - Gyre is consumed through the published `v0.5.0` module;
 - spool failures now affect readiness/degraded state instead of liveness;
 - unsupported live configuration changes are rejected and preserve the active
-  generation.
-
-## v0.7.0
-
-The release section will be cut from `Unreleased` only after the branch is
-merged, all verification gates pass, and the release tag points at that commit.
+  generation;
+- YAML parsing rejects unknown fields, multiple documents, and unsupported
+  processors instead of silently ignoring operator mistakes;
+- `golang.org/x/net`, `x/sys`, and `x/text` were updated to remove known
+  vulnerable versions from the module graph.
