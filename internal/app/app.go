@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -19,6 +20,7 @@ import (
 	"github.com/yaop-labs/wisp/internal/config"
 	otlpexp "github.com/yaop-labs/wisp/internal/exporter/otlp"
 	retryexp "github.com/yaop-labs/wisp/internal/exporter/retry"
+	"github.com/yaop-labs/wisp/internal/exporter/signalrouter"
 	spoolexp "github.com/yaop-labs/wisp/internal/exporter/spool"
 	"github.com/yaop-labs/wisp/internal/model"
 	"github.com/yaop-labs/wisp/internal/pipeline"
@@ -27,6 +29,7 @@ import (
 	"github.com/yaop-labs/wisp/internal/processor/reset"
 	"github.com/yaop-labs/wisp/internal/redact"
 	"github.com/yaop-labs/wisp/internal/selfobs"
+	"github.com/yaop-labs/wisp/internal/signal"
 	ebpfsrc "github.com/yaop-labs/wisp/internal/source/ebpf"
 	hostsrc "github.com/yaop-labs/wisp/internal/source/host"
 	otlprecv "github.com/yaop-labs/wisp/internal/source/otlp"
@@ -44,7 +47,8 @@ type App struct {
 	configMu    sync.Mutex
 	config      config.Config
 	// scrape, when set, is the hot-reloadable scrape source (see Reload).
-	scrape *scrapesrc.Source
+	scrape       *scrapesrc.Source
+	otlpReceiver *otlprecv.Receiver
 	// checks gate readiness. Liveness remains cheap and process-local: a broken
 	// durability layer makes Wisp unready/degraded, not falsely dead.
 	checks []readinessCheck
@@ -92,7 +96,10 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// Source registry: one entry per source type (name for logs, presence gate,
 	// and constructor). Adding a source is one entry here plus its config field
 	// and config.SourcesConfig.Enabled - not scattered if-blocks.
-	var scrapeSrc *scrapesrc.Source
+	var (
+		scrapeSrc *scrapesrc.Source
+		otlpRecv  *otlprecv.Receiver
+	)
 	registry := []struct {
 		name    string
 		present bool
@@ -115,7 +122,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				"grpc", oc.GRPC, "http", oc.HTTP,
 				"tls", oc.TLS != nil && oc.TLS.Enabled, "mtls", oc.TLS != nil && oc.TLS.ClientCAFile != "",
 				"auth", oc.Auth != nil && len(oc.Auth.Bearer) > 0)
-			return otlprecv.New(otlprecv.Options{
+			receiver, err := otlprecv.New(otlprecv.Options{
 				GRPCAddr:                       oc.GRPC,
 				HTTPAddr:                       oc.HTTP,
 				TLS:                            oc.TLS,
@@ -123,6 +130,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				Insecure:                       oc.Insecure,
 				DangerAllowBearerOverPlaintext: oc.DangerAllowBearerOverPlaintext,
 			}, logger)
+			otlpRecv = receiver
+			return receiver, err
 		}},
 		{"ebpf", cfg.Sources.EBPF != nil, func() (pipeline.Source, error) {
 			ok, reason := ebpfsrc.Available()
@@ -171,23 +180,75 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		logger.Info("otlp exporter reef bearer auth configured")
 	}
 
-	// otlp -> retry (transient blips) -> spool (outages, restarts).
-	var exporter pipeline.Exporter = retryexp.Wrap(otlpExp, retryexp.Config{
+	retryConfig := retryexp.Config{
 		MaxAttempts:    cfg.Exporter.OTLP.Retry.MaxAttempts,
 		InitialBackoff: cfg.Exporter.OTLP.Retry.InitialBackoff.Std(),
 		MaxBackoff:     cfg.Exporter.OTLP.Retry.MaxBackoff.Std(),
-	})
+	}
+	// Metrics keep their typed adapter. Logs get an independent OTLP capability
+	// and both routes converge on one signal-neutral durability queue.
+	var exporter pipeline.Exporter = retryexp.Wrap(otlpExp, retryConfig)
+	var logsSender signal.Sender
+	if otlpRecv != nil {
+		logsExporter, logsErr := otlpexp.NewLogs(otlpexp.Config{
+			Endpoint:                       cfg.Exporter.OTLP.Endpoint,
+			Protocol:                       cfg.Exporter.OTLP.Protocol,
+			Timeout:                        cfg.Exporter.OTLP.Timeout.Std(),
+			TLS:                            cfg.Exporter.OTLP.TLS,
+			Auth:                           cfg.Exporter.OTLP.Auth,
+			Insecure:                       cfg.Exporter.OTLP.Insecure,
+			DangerAllowBearerOverPlaintext: cfg.Exporter.OTLP.DangerAllowBearerOverPlaintext,
+			Headers:                        cfg.Exporter.OTLP.Headers,
+		}, logger)
+		if logsErr != nil {
+			_ = exporter.Close()
+			return nil, logsErr
+		}
+		logsSender = retryexp.WrapSender(logsExporter, retryConfig)
+	}
 	var checks []readinessCheck
 	if cfg.Exporter.Spool.Dir != "" {
-		sp, err := spoolexp.New(exporter, spoolexp.Config{
-			Dir:      cfg.Exporter.Spool.Dir,
-			MaxBytes: cfg.Exporter.Spool.MaxBytes,
-			MaxAge:   cfg.Exporter.Spool.MaxAge.Std(),
-		}, logger)
-		if err != nil {
-			return nil, err
+		signalLimits := make(map[signal.Kind]spoolexp.SignalLimit, len(cfg.Exporter.Spool.SignalLimits))
+		for kind, limit := range cfg.Exporter.Spool.SignalLimits {
+			signalLimits[signal.Kind(kind)] = spoolexp.SignalLimit{
+				MaxBytes: limit.MaxBytes, HighWatermark: limit.HighWatermark,
+				LowWatermark: limit.LowWatermark,
+			}
 		}
+		routes := map[signal.Kind]signal.Sender{
+			signal.Metrics: spoolexp.NewMetricSender(exporter),
+		}
+		if logsSender != nil {
+			routes[signal.Logs] = logsSender
+		}
+		router, routeErr := signalrouter.New(routes)
+		if routeErr != nil {
+			_ = exporter.Close()
+			if logsSender != nil {
+				_ = logsSender.Close()
+			}
+			return nil, routeErr
+		}
+		queue, queueErr := spoolexp.NewQueue(router, spoolexp.Config{
+			Dir:          cfg.Exporter.Spool.Dir,
+			MaxBytes:     cfg.Exporter.Spool.MaxBytes,
+			MaxAge:       cfg.Exporter.Spool.MaxAge.Std(),
+			SignalLimits: signalLimits,
+		}, logger)
+		if queueErr != nil {
+			_ = router.Close()
+			return nil, queueErr
+		}
+		sp := spoolexp.NewMetricAdapter(queue)
 		exporter = sp
+		if otlpRecv != nil {
+			otlpRecv.SetLogsEmitter(func(ctx context.Context, envelope signal.Envelope) error {
+				if queue.UnderSignalPressure(signal.Logs) {
+					return pipeline.ErrBackpressure
+				}
+				return queue.Accept(ctx, envelope)
+			})
+		}
 		// Close the backpressure loop: when the spool crosses its high-water
 		// mark, emit sheds at the source (pull) / returns 429 (push).
 		p.SetPressure(sp.UnderPressure)
@@ -231,6 +292,9 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			return out
 		})
 		logger.Info("spool enabled", "dir", cfg.Exporter.Spool.Dir, "max_bytes", cfg.Exporter.Spool.MaxBytes, "max_age", cfg.Exporter.Spool.MaxAge.Std())
+	} else if otlpRecv != nil {
+		otlpRecv.SetLogsEmitter(logsSender.Send)
+		exporter = &exporterWithSignalClose{Exporter: exporter, sender: logsSender}
 	}
 	p.AddExporter(exporter)
 
@@ -239,9 +303,19 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		selfEndpoint: cfg.Agent.SelfMetrics.Endpoint,
 		logger:       logger,
 		scrape:       scrapeSrc,
+		otlpReceiver: otlpRecv,
 		checks:       checks,
 		config:       cfg,
 	}, nil
+}
+
+type exporterWithSignalClose struct {
+	pipeline.Exporter
+	sender signal.Sender
+}
+
+func (e *exporterWithSignalClose) Close() error {
+	return errors.Join(e.Exporter.Close(), e.sender.Close())
 }
 
 // SetOperationalHandler installs the Gyre lifecycle handler. It must be called

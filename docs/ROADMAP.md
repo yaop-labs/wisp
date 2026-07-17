@@ -18,9 +18,8 @@ patch releases when that improves reviewability or operational safety.
 - versioned, checksummed, signal-neutral envelope — implemented;
 - disk-format migration from metric-only spool records — implemented;
 - signal-neutral queue, per-signal quotas, pressure, fair scheduling, and
-  self-observability — implemented in the core; config exposure follows with
-  the first additional signal;
-- OTLP metrics, logs, and traces receiver/exporter registration;
+  self-observability — implemented;
+- OTLP Logs receiver/exporter registration — implemented; traces remain;
 - payload splitting and permanent/transient response semantics.
 
 The design must satisfy ADR 0001 so a future `profiles` kind does not require a

@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/yaop-labs/wisp/internal/model"
 	"github.com/yaop-labs/wisp/internal/pipeline"
+	"github.com/yaop-labs/wisp/internal/signal"
 )
 
 // onePointRequest is a minimal OTLP request with one supported (gauge) point so
@@ -47,6 +49,9 @@ func onePointRequest() *colmetricspb.ExportMetricsServiceRequest {
 func TestReceiverSignalsBackpressure(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	r := mustReceiver(t, Options{GRPCAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0"}, logger)
+	r.SetLogsEmitter(func(context.Context, signal.Envelope) error {
+		return pipeline.ErrBackpressure
+	})
 	ctx := t.Context()
 	go func() {
 		_ = r.Start(ctx, func(context.Context, model.Batch) error { return pipeline.ErrBackpressure })
@@ -74,5 +79,20 @@ func TestReceiverSignalsBackpressure(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("http status = %d, want 429", resp.StatusCode)
+	}
+
+	// Logs use their own pressure callback but the same OTLP status contract.
+	_, err = collogspb.NewLogsServiceClient(conn).Export(cctx, sampleLogsRequest())
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("logs grpc status = %v, want ResourceExhausted", status.Code(err))
+	}
+	logBody, _ := proto.Marshal(sampleLogsRequest())
+	logResp, err := http.Post("http://"+r.HTTPAddr()+"/v1/logs", "application/x-protobuf", bytes.NewReader(logBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logResp.Body.Close()
+	if logResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("logs http status = %d, want 429", logResp.StatusCode)
 	}
 }

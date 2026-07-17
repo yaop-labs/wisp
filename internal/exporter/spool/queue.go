@@ -35,12 +35,9 @@ const (
 // limit even when its queue is otherwise empty.
 var ErrRecordTooLarge = errors.New("spool: record exceeds queue limit")
 
-// Sender delivers a durable signal envelope to its downstream. Implementations
-// return pipeline.ErrPermanent for an envelope that retrying cannot fix.
-type Sender interface {
-	Send(context.Context, signal.Envelope) error
-	Close() error
-}
+// Sender is kept as an alias for source compatibility. New signal-neutral
+// components should depend on signal.Sender directly.
+type Sender = signal.Sender
 
 // SignalLimit optionally applies an independent cap and pressure band to one
 // signal. A zero MaxBytes means the signal only shares the global budget.
@@ -129,11 +126,24 @@ func NewQueue(sender Sender, cfg Config, logger *slog.Logger) (*Queue, error) {
 
 	limits := make(map[signal.Kind]SignalLimit, len(cfg.SignalLimits))
 	for kind, limit := range cfg.SignalLimits {
+		if !signal.IsValidKind(kind) {
+			return nil, fmt.Errorf("spool: invalid signal limit kind %q", kind)
+		}
 		if limit.MaxBytes < 0 {
 			return nil, fmt.Errorf("spool: negative max bytes for signal %q", kind)
 		}
 		if limit.MaxBytes == 0 {
 			continue
+		}
+		if limit.HighWatermark < 0 || limit.HighWatermark > limit.MaxBytes {
+			return nil, fmt.Errorf("spool: invalid high watermark for signal %q", kind)
+		}
+		if limit.LowWatermark < 0 ||
+			(limit.HighWatermark > 0 && limit.LowWatermark >= limit.HighWatermark) {
+			return nil, fmt.Errorf("spool: invalid low watermark for signal %q", kind)
+		}
+		if limit.LowWatermark > 0 && limit.HighWatermark == 0 {
+			return nil, fmt.Errorf("spool: signal %q high watermark required with low watermark", kind)
 		}
 		limit.HighWatermark, limit.LowWatermark = watermarks(
 			limit.MaxBytes, limit.HighWatermark, limit.LowWatermark,

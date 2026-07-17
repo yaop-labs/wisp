@@ -9,6 +9,7 @@ import (
 
 	"github.com/yaop-labs/wisp/internal/model"
 	"github.com/yaop-labs/wisp/internal/pipeline"
+	"github.com/yaop-labs/wisp/internal/signal"
 )
 
 type flaky struct {
@@ -64,5 +65,36 @@ func TestRetryGivesUp(t *testing.T) {
 	}
 	if f.calls != 3 {
 		t.Errorf("expected exactly 3 attempts, got %d", f.calls)
+	}
+}
+
+type flakySender struct {
+	failUntil int
+	calls     int
+}
+
+func (s *flakySender) Send(context.Context, signal.Envelope) error {
+	s.calls++
+	if s.calls <= s.failUntil {
+		return errors.New("boom")
+	}
+	return nil
+}
+func (*flakySender) Close() error { return nil }
+
+func TestSignalSenderUsesSameRetrySemantics(t *testing.T) {
+	inner := &flakySender{failUntil: 2}
+	sender := WrapSender(inner, Config{
+		MaxAttempts: 5, InitialBackoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond,
+	})
+	envelope, err := signal.New(signal.Logs, "test.v1", "bytes", []byte("x"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sender.Send(context.Background(), envelope); err != nil {
+		t.Fatal(err)
+	}
+	if inner.calls != 3 {
+		t.Fatalf("calls = %d, want 3", inner.calls)
 	}
 }

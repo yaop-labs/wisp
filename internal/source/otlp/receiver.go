@@ -1,7 +1,6 @@
-// Package otlp is the OTLP receive source: wisp runs as a local gateway/sidecar
-// that accepts OTLP metrics (gRPC MetricsService and HTTP /v1/metrics) from apps
-// using an OTel SDK, converts them to the internal model, and emits them into
-// the pipeline - the inverse of the OTLP exporter.
+// Package otlp is the OTLP receive source. Metrics are converted into Wisp's
+// typed pipeline model; logs retain their protobuf representation and enter the
+// signal-neutral durability path directly.
 package otlp
 
 import (
@@ -11,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"time"
@@ -24,11 +24,14 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 
 	"github.com/yaop-labs/wisp/internal/model"
 	"github.com/yaop-labs/wisp/internal/pipeline"
 	"github.com/yaop-labs/wisp/internal/selfobs"
+	"github.com/yaop-labs/wisp/internal/signal"
 )
 
 const maxBodyBytes = 16 << 20
@@ -59,12 +62,21 @@ type Receiver struct {
 	httpEdge       *edge.HTTPServer
 
 	emit func(context.Context, model.Batch) error
+	// logsEmit bypasses metric processors and preserves the OTLP protobuf as an
+	// opaque durable envelope.
+	logsEmit func(context.Context, signal.Envelope) error
 
 	grpcSrv *grpc.Server
 	httpSrv *http.Server
 	grpcLn  net.Listener
 	httpLn  net.Listener
 	ready   chan struct{}
+}
+
+// SetLogsEmitter enables OTLP Logs on the same listeners. It must be called
+// before Start.
+func (r *Receiver) SetLogsEmitter(emit func(context.Context, signal.Envelope) error) {
+	r.logsEmit = emit
 }
 
 // New builds a Receiver from opts, materializing Reef's TLS and bearer layers
@@ -141,6 +153,9 @@ func (r *Receiver) Start(ctx context.Context, emit func(context.Context, model.B
 		opts := append([]grpc.ServerOption{grpc.MaxRecvMsgSize(maxBodyBytes)}, r.grpcOpts...)
 		r.grpcSrv = grpc.NewServer(opts...)
 		colmetricspb.RegisterMetricsServiceServer(r.grpcSrv, &grpcService{r: r})
+		if r.logsEmit != nil {
+			collogspb.RegisterLogsServiceServer(r.grpcSrv, &grpcLogsService{r: r})
+		}
 		go func() { _ = r.grpcSrv.Serve(ln) }()
 		r.logger.Info("otlp receiver grpc listening", "addr", ln.Addr().String(), "tls", secure)
 	}
@@ -157,6 +172,9 @@ func (r *Receiver) Start(ctx context.Context, emit func(context.Context, model.B
 		}
 		mux := http.NewServeMux()
 		mux.HandleFunc("/v1/metrics", r.handleHTTP)
+		if r.logsEmit != nil {
+			mux.HandleFunc("/v1/logs", r.handleLogsHTTP)
+		}
 		r.httpLn = ln
 		r.httpSrv = &http.Server{
 			Handler:           r.httpMiddleware(mux),
@@ -175,6 +193,86 @@ func (r *Receiver) Start(ctx context.Context, emit func(context.Context, model.B
 	close(r.ready)
 	<-ctx.Done()
 	return nil
+}
+
+func (r *Receiver) ingestLogs(ctx context.Context, request *collogspb.ExportLogsServiceRequest) error {
+	if r.logsEmit == nil {
+		return fmt.Errorf("%w: OTLP Logs capability is disabled", pipeline.ErrPermanent)
+	}
+	records := logRecordCount(request)
+	if records == 0 {
+		return nil
+	}
+	payload, err := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
+	if err != nil {
+		return fmt.Errorf("%w: encode OTLP Logs: %v", pipeline.ErrPermanent, err)
+	}
+	envelope, err := signal.New(
+		signal.Logs, signal.OTLPLogsSchema, signal.OTLPProtobufEncoding,
+		payload, commonLogsResource(request),
+	)
+	if err != nil {
+		return err
+	}
+	if err := r.logsEmit(ctx, envelope); err != nil {
+		return err
+	}
+	selfobs.OTLPLogsReceived.Add(uint64(records))
+	return nil
+}
+
+func commonLogsResource(request *collogspb.ExportLogsServiceRequest) map[string]string {
+	var common map[string]string
+	for i, resourceLogs := range request.ResourceLogs {
+		attributes := make(map[string]string)
+		if resourceLogs != nil && resourceLogs.Resource != nil {
+			for _, attribute := range resourceLogs.Resource.Attributes {
+				if attribute == nil {
+					continue
+				}
+				if !signal.IsIdentityKey(attribute.Key) {
+					continue
+				}
+				if _, duplicate := attributes[attribute.Key]; duplicate {
+					return nil
+				}
+				if attribute.Value == nil {
+					return nil
+				}
+				value, ok := attribute.Value.GetValue().(*commonpb.AnyValue_StringValue)
+				if !ok {
+					return nil
+				}
+				attributes[attribute.Key] = value.StringValue
+			}
+		}
+		identity, ok := signal.ResourceIdentity(attributes)
+		if !ok {
+			return nil
+		}
+		if i == 0 {
+			common = identity
+		} else if !maps.Equal(common, identity) {
+			return nil
+		}
+	}
+	return common
+}
+
+func logRecordCount(request *collogspb.ExportLogsServiceRequest) int {
+	count := 0
+	for _, resource := range request.ResourceLogs {
+		if resource == nil {
+			continue
+		}
+		for _, scope := range resource.ScopeLogs {
+			if scope == nil {
+				continue
+			}
+			count += len(scope.LogRecords)
+		}
+	}
+	return count
 }
 
 // Stop gracefully shuts the servers down.
@@ -245,6 +343,25 @@ type grpcService struct {
 	r *Receiver
 }
 
+type grpcLogsService struct {
+	collogspb.UnimplementedLogsServiceServer
+	r *Receiver
+}
+
+func (s *grpcLogsService) Export(ctx context.Context, request *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
+	if err := s.r.ingestLogs(ctx, request); err != nil {
+		switch {
+		case errors.Is(err, pipeline.ErrBackpressure):
+			return nil, status.Error(codes.ResourceExhausted, "wisp backpressure: logs spool above high-water mark")
+		case errors.Is(err, pipeline.ErrPermanent):
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		default:
+			return nil, status.Error(codes.Unavailable, "wisp logs pipeline unavailable")
+		}
+	}
+	return &collogspb.ExportLogsServiceResponse{}, nil
+}
+
 func (s *grpcService) Export(ctx context.Context, req *colmetricspb.ExportMetricsServiceRequest) (*colmetricspb.ExportMetricsServiceResponse, error) {
 	if err := s.r.ingest(ctx, req); err != nil {
 		if errors.Is(err, pipeline.ErrBackpressure) {
@@ -282,4 +399,38 @@ func (r *Receiver) handleHTTP(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/x-protobuf")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(resp)
+}
+
+func (r *Receiver) handleLogsHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxBodyBytes))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var request collogspb.ExportLogsServiceRequest
+	if err := proto.Unmarshal(body, &request); err != nil {
+		http.Error(w, "bad protobuf: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := r.ingestLogs(req.Context(), &request); err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, pipeline.ErrBackpressure):
+			http.Error(w, "wisp backpressure: logs spool above high-water mark", http.StatusTooManyRequests)
+		case errors.Is(err, pipeline.ErrPermanent):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		default:
+			http.Error(w, "logs pipeline unavailable", http.StatusServiceUnavailable)
+		}
+		return
+	}
+	response, _ := proto.Marshal(&collogspb.ExportLogsServiceResponse{})
+	w.Header().Set("Content-Type", signal.OTLPProtobufEncoding)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(response)
 }

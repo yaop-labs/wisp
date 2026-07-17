@@ -7,9 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/yaop-labs/wisp/internal/model"
 	"github.com/yaop-labs/wisp/internal/pipeline"
@@ -20,19 +17,6 @@ const (
 	metricSchema   = "wisp.metric-batch.gob/v1"
 	metricEncoding = "application/x-gob"
 )
-
-var envelopeIdentityKeys = map[string]struct{}{
-	"service.name": {}, "service.namespace": {}, "service.instance.id": {},
-	"service.version": {}, "host.id": {}, "host.name": {}, "process.pid": {},
-	"process.executable.name": {}, "process.executable.path": {},
-	"process.executable.build_id.gnu": {}, "process.executable.build_id.go": {},
-	"process.runtime.name": {}, "process.runtime.version": {},
-	"container.id": {}, "container.name": {}, "k8s.cluster.name": {},
-	"k8s.namespace.name": {}, "k8s.node.name": {}, "k8s.pod.name": {},
-	"k8s.pod.uid": {}, "k8s.container.name": {}, "k8s.deployment.name": {},
-	"k8s.statefulset.name": {}, "k8s.daemonset.name": {}, "k8s.job.name": {},
-	"wisp.profile.executable.build_id": {}, "wisp.profile.executable.debug_name": {},
-}
 
 // Exporter preserves the existing metric pipeline API while delegating all
 // durability mechanics to the signal-neutral Queue.
@@ -55,12 +39,25 @@ func (s *metricSender) Send(ctx context.Context, envelope signal.Envelope) error
 func (s *metricSender) Close() error { return s.inner.Close() }
 
 func New(inner pipeline.Exporter, cfg Config, logger *slog.Logger) (*Exporter, error) {
-	queue, err := NewQueue(&metricSender{inner: inner}, cfg, logger)
+	queue, err := NewQueue(NewMetricSender(inner), cfg, logger)
 	if err != nil {
 		return nil, err
 	}
 	queue.depth(signal.Metrics)
 	return &Exporter{Queue: queue}, nil
+}
+
+// NewMetricSender adapts the typed metric exporter to the signal sender
+// contract. Closing it closes the wrapped exporter.
+func NewMetricSender(inner pipeline.Exporter) signal.Sender {
+	return &metricSender{inner: inner}
+}
+
+// NewMetricAdapter exposes an existing shared Queue through the legacy metric
+// pipeline contract. The adapter owns and closes the queue.
+func NewMetricAdapter(queue *Queue) *Exporter {
+	queue.depth(signal.Metrics)
+	return &Exporter{Queue: queue}
 }
 
 func (e *Exporter) Export(ctx context.Context, batch model.Batch) error {
@@ -145,17 +142,13 @@ func identityFromLabels(labels model.Labels) (map[string]string, bool) {
 	}
 	out := make(map[string]string, len(labels))
 	for _, label := range labels {
-		if _, keep := envelopeIdentityKeys[label.Name]; !keep {
+		if !signal.IsIdentityKey(label.Name) {
 			continue
 		}
 		if _, duplicate := out[label.Name]; duplicate {
 			return nil, false
 		}
-		if len(label.Value) > 4096 || !utf8.ValidString(label.Value) ||
-			strings.IndexFunc(label.Value, unicode.IsControl) >= 0 {
-			return nil, false
-		}
 		out[label.Name] = label.Value
 	}
-	return out, true
+	return signal.ResourceIdentity(out)
 }

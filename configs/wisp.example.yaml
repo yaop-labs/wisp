@@ -36,7 +36,7 @@ sources:
   #       # pods opt in via prometheus.io/scrape: "true"; targets carry
   #       # __meta_kubernetes_* labels for relabel
 
-  # Receive OTLP from apps using an OTel SDK (wisp as a local gateway/sidecar).
+  # Receive OTLP metrics and logs from apps (wisp as a local gateway/sidecar).
   # otlp:
   #   grpc: "0.0.0.0:4317"
   #   http: "0.0.0.0:4318"
@@ -98,6 +98,11 @@ exporter:
     dir: "./wisp-spool"
     max_bytes: 536870912 # 512 MiB on-disk buffer for collector/amber downtime
     max_age: 6h # drop spooled batches older than this (stale data isn't worth keeping)
+    signal_limits:
+      metrics:
+        max_bytes: 268435456
+      logs:
+        max_bytes: 268435456
     # Backpressure: when the spool passes ~80% of max_bytes, wisp sheds at the
     # source — pull scrapes are skipped, the OTLP receiver returns 429 /
     # RESOURCE_EXHAUSTED — and releases below ~50%. See wisp_backpressure_active.

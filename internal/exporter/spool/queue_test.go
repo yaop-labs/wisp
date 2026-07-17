@@ -272,3 +272,15 @@ func TestTinyLimitStillGetsValidPressureBand(t *testing.T) {
 		t.Fatalf("watermarks(1) = %d/%d, want 1/0", high, low)
 	}
 }
+
+func TestQueueRejectsInvalidSignalLimit(t *testing.T) {
+	_, err := NewQueue(newSignalSender(), Config{
+		Dir: t.TempDir(),
+		SignalLimits: map[signal.Kind]SignalLimit{
+			signal.Logs: {MaxBytes: 10, HighWatermark: 8, LowWatermark: 9},
+		},
+	}, discard())
+	if err == nil {
+		t.Fatal("invalid signal watermark configuration was accepted")
+	}
+}

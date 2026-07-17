@@ -58,6 +58,18 @@ Unsupported signal kinds or payload schemas are never decoded as metrics.
 Corrupt/checksum-invalid records follow the existing corrupt-spool path and
 cannot wedge newer entries.
 
+OTLP Logs use a protobuf-native adapter with no intermediate Wisp log model:
+
+```text
+kind:      logs
+schema:    opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest/v1
+encoding:  application/x-protobuf
+```
+
+This preserves OTLP fields and protobuf unknown fields across admission,
+restart, and export. Metric-only relabel/reset/cardinality processors never see
+or mutate log records.
+
 ## Signal-neutral queue
 
 The durability core accepts validated envelopes through a signal-neutral

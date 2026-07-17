@@ -55,6 +55,8 @@ var (
 	BackpressureShed     = newCounter("wisp_backpressure_shed_total", "Data points shed at the source because the spool crossed its high-water mark.")
 	OTLPReceived         = newCounter("wisp_otlp_received_total", "Data points received over the OTLP receiver.")
 	OTLPUnsupported      = newCounter("wisp_otlp_unsupported_total", "Received OTLP points dropped (explicit Histogram / Summary shapes are not modeled; send exponential histograms).")
+	OTLPLogsReceived     = newCounter("wisp_otlp_logs_received_total", "Log records durably accepted from OTLP.")
+	OTLPLogsRejected     = newCounter("wisp_otlp_logs_rejected_total", "Log records rejected in an OTLP downstream partial-success response.")
 )
 
 // gaugeFunc is a gauge whose current value is read from fn at scrape time.

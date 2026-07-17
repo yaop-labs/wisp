@@ -11,7 +11,9 @@ versioning without treating `v1.0.0` as a schedule target.
   decoding and open signal kinds;
 - documented compatibility path for legacy metric `.batch` spool files;
 - signal-neutral durability queue with per-signal depth, optional byte limits,
-  pressure hysteresis, fair drain, and labelled self-observability gauges.
+  pressure hysteresis, fair drain, and labelled self-observability gauges;
+- lossless OTLP Logs receive/export over gRPC and HTTP/protobuf;
+- configurable per-signal spool limits and logs receive/rejection counters.
 
 ### Changed
 
@@ -19,7 +21,8 @@ versioning without treating `v1.0.0` as a schedule target.
   records remain readable and drain normally;
 - the metric pipeline now uses a compatibility adapter over the generic queue;
 - transient drain failures block only their signal, while permanent live
-  rejections return immediately instead of consuming spool capacity.
+  rejections return immediately instead of consuming spool capacity;
+- OTLP Logs bypass metric-only processors and share the same durability queue.
 
 ## v0.7.0 — 2026-07-17
 

@@ -65,6 +65,14 @@ resource: {attributes: {service.name: wisp}}`, "enabled is false"},
 sources: {otlp: {grpc: "0.0.0.0:4317", tls: {enabled: false, cert_file: /s.crt, key_file: /s.key}}}
 exporter: {otlp: {endpoint: "x:4317"}}
 resource: {attributes: {service.name: wisp}}`, "enabled is false"},
+		{"invalid signal limit kind", `
+sources: {host: {interval: 15s}}
+exporter: {otlp: {endpoint: "x:4317"}, spool: {dir: /tmp/spool, signal_limits: {"Bad Kind": {max_bytes: 10}}}}
+resource: {attributes: {service.name: wisp}}`, "invalid signal kind"},
+		{"invalid signal limit watermarks", `
+sources: {host: {interval: 15s}}
+exporter: {otlp: {endpoint: "x:4317"}, spool: {dir: /tmp/spool, signal_limits: {logs: {max_bytes: 10, high_watermark: 8, low_watermark: 9}}}}
+resource: {attributes: {service.name: wisp}}`, "below high_watermark"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -133,6 +141,13 @@ exporter:
     dir: ./spool
     max_bytes: 1048576
     max_age: 6h
+    signal_limits:
+      metrics:
+        max_bytes: 524288
+      logs:
+        max_bytes: 524288
+        high_watermark: 419430
+        low_watermark: 262144
 resource:
   attributes:
     service.name: "wisp"
@@ -166,6 +181,10 @@ resource:
 	}
 	if cfg.Exporter.Spool.MaxAge.Std() != 6*time.Hour || cfg.Exporter.Spool.MaxBytes != 1<<20 {
 		t.Errorf("spool not decoded: %+v", cfg.Exporter.Spool)
+	}
+	if got := cfg.Exporter.Spool.SignalLimits["logs"]; got.MaxBytes != 1<<19 ||
+		got.HighWatermark != 419430 || got.LowWatermark != 1<<18 {
+		t.Errorf("logs signal limit not decoded: %+v", got)
 	}
 }
 

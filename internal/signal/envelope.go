@@ -5,6 +5,7 @@ package signal
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -28,6 +29,13 @@ const (
 	Traces   Kind = "traces"
 	Profiles Kind = "profiles"
 )
+
+// Sender delivers signal envelopes to a downstream capability. A sender may be
+// called concurrently and owns any connections it closes.
+type Sender interface {
+	Send(context.Context, Envelope) error
+	Close() error
+}
 
 const (
 	Version               uint16 = 1
@@ -151,6 +159,10 @@ func validKind(kind Kind) bool {
 	}
 	return true
 }
+
+// IsValidKind reports whether kind is safe for durable metadata and filenames.
+// The namespace is open; validity does not imply that a route is configured.
+func IsValidKind(kind Kind) bool { return validKind(kind) }
 
 func validText(value string, max int) bool {
 	return value != "" && len(value) <= max && validUTF8Text(value)

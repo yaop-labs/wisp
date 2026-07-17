@@ -13,6 +13,8 @@ import (
 	"github.com/yaop-labs/reef/bearer"
 	"github.com/yaop-labs/reef/tlsconf"
 	"gopkg.in/yaml.v3"
+
+	"github.com/yaop-labs/wisp/internal/signal"
 )
 
 // Duration wraps time.Duration for YAML unmarshaling (e.g. "15s").
@@ -194,9 +196,16 @@ type RetryConfig struct {
 // bounds are omitted they default to 512MiB / 6h so the queue can't fill the
 // disk; a negative value opts out (unbounded size / never expire).
 type SpoolConfig struct {
-	Dir      string   `yaml:"dir"`
-	MaxBytes int64    `yaml:"max_bytes"`
-	MaxAge   Duration `yaml:"max_age"`
+	Dir          string                      `yaml:"dir"`
+	MaxBytes     int64                       `yaml:"max_bytes"`
+	MaxAge       Duration                    `yaml:"max_age"`
+	SignalLimits map[string]SpoolSignalLimit `yaml:"signal_limits"`
+}
+
+type SpoolSignalLimit struct {
+	MaxBytes      int64 `yaml:"max_bytes"`
+	HighWatermark int64 `yaml:"high_watermark"`
+	LowWatermark  int64 `yaml:"low_watermark"`
 }
 
 // ResourceConfig holds resource attributes attached to every series. service.name
@@ -282,6 +291,29 @@ func (c *Config) Validate() error {
 	if c.Sources.OTLP != nil && c.Sources.OTLP.TLS != nil && !c.Sources.OTLP.TLS.Enabled {
 		if _, err := tlsconf.Server(c.Sources.OTLP.TLS); err != nil {
 			return fmt.Errorf("sources.otlp.tls: %w", err)
+		}
+	}
+	for name, limit := range c.Exporter.Spool.SignalLimits {
+		if c.Exporter.Spool.Dir == "" {
+			return fmt.Errorf("exporter.spool.signal_limits require exporter.spool.dir")
+		}
+		if !signal.IsValidKind(signal.Kind(name)) {
+			return fmt.Errorf("exporter.spool.signal_limits: invalid signal kind %q", name)
+		}
+		if limit.MaxBytes <= 0 {
+			return fmt.Errorf("exporter.spool.signal_limits.%s.max_bytes must be positive", name)
+		}
+		if limit.HighWatermark < 0 || limit.HighWatermark > limit.MaxBytes {
+			return fmt.Errorf("exporter.spool.signal_limits.%s.high_watermark must be between 0 and max_bytes", name)
+		}
+		if limit.LowWatermark < 0 {
+			return fmt.Errorf("exporter.spool.signal_limits.%s.low_watermark must not be negative", name)
+		}
+		if limit.LowWatermark > 0 && limit.HighWatermark == 0 {
+			return fmt.Errorf("exporter.spool.signal_limits.%s.high_watermark is required when low_watermark is set", name)
+		}
+		if limit.HighWatermark > 0 && limit.LowWatermark >= limit.HighWatermark {
+			return fmt.Errorf("exporter.spool.signal_limits.%s.low_watermark must be below high_watermark", name)
 		}
 	}
 	if _, ok := c.Resource.Attributes["service.name"]; !ok {

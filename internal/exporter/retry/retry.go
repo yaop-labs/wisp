@@ -10,6 +10,7 @@ import (
 
 	"github.com/yaop-labs/wisp/internal/model"
 	"github.com/yaop-labs/wisp/internal/pipeline"
+	"github.com/yaop-labs/wisp/internal/signal"
 )
 
 // Config tunes the backoff.
@@ -26,6 +27,11 @@ type Exporter struct {
 }
 
 func Wrap(inner pipeline.Exporter, cfg Config) *Exporter {
+	cfg = normalize(cfg)
+	return &Exporter{inner: inner, cfg: cfg}
+}
+
+func normalize(cfg Config) Config {
 	if cfg.MaxAttempts <= 0 {
 		cfg.MaxAttempts = 3
 	}
@@ -35,7 +41,7 @@ func Wrap(inner pipeline.Exporter, cfg Config) *Exporter {
 	if cfg.MaxBackoff <= 0 {
 		cfg.MaxBackoff = 10 * time.Second
 	}
-	return &Exporter{inner: inner, cfg: cfg}
+	return cfg
 }
 
 func (e *Exporter) Export(ctx context.Context, b model.Batch) error {
@@ -64,3 +70,40 @@ func (e *Exporter) Export(ctx context.Context, b model.Batch) error {
 }
 
 func (e *Exporter) Close() error { return e.inner.Close() }
+
+// SignalSender applies the same retry policy to signal-neutral exporters.
+type SignalSender struct {
+	inner signal.Sender
+	cfg   Config
+}
+
+func WrapSender(inner signal.Sender, cfg Config) *SignalSender {
+	return &SignalSender{inner: inner, cfg: normalize(cfg)}
+}
+
+func (s *SignalSender) Send(ctx context.Context, envelope signal.Envelope) error {
+	backoff := s.cfg.InitialBackoff
+	var err error
+	for attempt := 0; attempt < s.cfg.MaxAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			backoff *= 2
+			if backoff > s.cfg.MaxBackoff {
+				backoff = s.cfg.MaxBackoff
+			}
+		}
+		if err = s.inner.Send(ctx, envelope); err == nil {
+			return nil
+		}
+		if errors.Is(err, pipeline.ErrPermanent) {
+			return err
+		}
+	}
+	return err
+}
+
+func (s *SignalSender) Close() error { return s.inner.Close() }
