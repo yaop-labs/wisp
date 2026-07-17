@@ -3,7 +3,10 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -104,10 +107,12 @@ type FileSDConfig struct {
 
 // OTLPSource configures the OTLP receiver (apps push to wisp as a local gateway).
 type OTLPSource struct {
-	GRPC string                `yaml:"grpc"`
-	HTTP string                `yaml:"http"`
-	TLS  *tlsconf.ServerConfig `yaml:"tls"`
-	Auth *bearer.ServerConfig  `yaml:"auth"`
+	GRPC                           string                `yaml:"grpc"`
+	HTTP                           string                `yaml:"http"`
+	TLS                            *tlsconf.ServerConfig `yaml:"tls"`
+	Auth                           *bearer.ServerConfig  `yaml:"auth"`
+	Insecure                       bool                  `yaml:"insecure"`
+	DangerAllowBearerOverPlaintext bool                  `yaml:"danger_allow_bearer_over_plaintext"`
 }
 
 // EBPFSource configures kernel-side probes (Linux-only, requires CAP_BPF).
@@ -165,13 +170,15 @@ type ExporterConfig struct {
 
 // OTLPExporter configures the OTLP exporter to the collector (or amber directly).
 type OTLPExporter struct {
-	Endpoint string                `yaml:"endpoint"`
-	Protocol string                `yaml:"protocol"` // "grpc" | "http"
-	Timeout  Duration              `yaml:"timeout"`
-	Retry    RetryConfig           `yaml:"retry"`
-	TLS      *tlsconf.ClientConfig `yaml:"tls"`
-	Auth     *bearer.ClientConfig  `yaml:"auth"`
-	Headers  map[string]string     `yaml:"headers"` // additional non-auth headers
+	Endpoint                       string                `yaml:"endpoint"`
+	Protocol                       string                `yaml:"protocol"` // "grpc" | "http"
+	Timeout                        Duration              `yaml:"timeout"`
+	Retry                          RetryConfig           `yaml:"retry"`
+	TLS                            *tlsconf.ClientConfig `yaml:"tls"`
+	Auth                           *bearer.ClientConfig  `yaml:"auth"`
+	Insecure                       bool                  `yaml:"insecure"`
+	DangerAllowBearerOverPlaintext bool                  `yaml:"danger_allow_bearer_over_plaintext"`
+	Headers                        map[string]string     `yaml:"headers"` // additional non-auth headers
 }
 
 // RetryConfig configures exporter retries.
@@ -200,18 +207,47 @@ type ResourceConfig struct {
 
 // Load reads and validates a config file.
 func Load(path string) (Config, error) {
+	cfg, _, err := LoadDocument(path)
+	return cfg, err
+}
+
+// LoadDocument returns both the typed configuration and a canonical JSON
+// representation suitable for a Gyre Envelope. Keeping the envelope JSON-valid
+// matters for audit/config APIs even though the operator-facing file is YAML.
+func LoadDocument(path string) (Config, json.RawMessage, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("config: read %s: %w", path, err)
+		return Config{}, nil, fmt.Errorf("config: read %s: %w", path, err)
 	}
-	return Parse(data)
+	cfg, err := Parse(data)
+	if err != nil {
+		return Config{}, nil, err
+	}
+	var document any
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return Config{}, nil, fmt.Errorf("config: canonicalize yaml: %w", err)
+	}
+	spec, err := json.Marshal(document)
+	if err != nil {
+		return Config{}, nil, fmt.Errorf("config: encode envelope spec: %w", err)
+	}
+	return cfg, spec, nil
 }
 
 // Parse unmarshals and validates config from raw YAML.
 func Parse(data []byte) (Config, error) {
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("config: parse yaml: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return Config{}, fmt.Errorf("config: multiple YAML documents are not supported")
+		}
+		return Config{}, fmt.Errorf("config: parse trailing yaml: %w", err)
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err

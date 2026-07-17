@@ -10,7 +10,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/yaop-labs/wisp/internal/config"
@@ -35,15 +38,20 @@ type App struct {
 	selfEndpoint string
 	logger       *slog.Logger
 	selfSrv      *http.Server
+	// operational exposes the Gyre lifecycle endpoints alongside /metrics.
+	// It is installed before Start by NewGyreComponent.
+	operational http.Handler
+	configMu    sync.Mutex
+	config      config.Config
 	// scrape, when set, is the hot-reloadable scrape source (see Reload).
 	scrape *scrapesrc.Source
-	// checks gate /healthz: the endpoint reports 503 with the failing check's
-	// name as soon as any returns an error. Components register their own.
-	checks []healthCheck
+	// checks gate readiness. Liveness remains cheap and process-local: a broken
+	// durability layer makes Wisp unready/degraded, not falsely dead.
+	checks []readinessCheck
 }
 
-// healthCheck is a named readiness probe surfaced on /healthz.
-type healthCheck struct {
+// readinessCheck is a cheap named dependency/durability probe.
+type readinessCheck struct {
 	name  string
 	check func() error
 }
@@ -103,26 +111,17 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		}},
 		{"otlp", cfg.Sources.OTLP != nil, func() (pipeline.Source, error) {
 			oc := cfg.Sources.OTLP
-			if warnings, err := oc.TLS.Validate(); err != nil {
-				return nil, fmt.Errorf("receiver reef tls: %w", err)
-			} else {
-				for _, warning := range warnings {
-					logger.Warn("reef configuration warning", "edge", "otlp-receiver", "warning", warning)
-				}
-			}
-			if warnings, err := oc.Auth.Validate(); err != nil {
-				return nil, fmt.Errorf("receiver reef auth: %w", err)
-			} else {
-				for _, warning := range warnings {
-					logger.Warn("reef configuration warning", "edge", "otlp-receiver", "warning", warning)
-				}
-			}
 			logger.Info("otlp receive source enabled",
 				"grpc", oc.GRPC, "http", oc.HTTP,
 				"tls", oc.TLS != nil && oc.TLS.Enabled, "mtls", oc.TLS != nil && oc.TLS.ClientCAFile != "",
 				"auth", oc.Auth != nil && len(oc.Auth.Bearer) > 0)
 			return otlprecv.New(otlprecv.Options{
-				GRPCAddr: oc.GRPC, HTTPAddr: oc.HTTP, TLS: oc.TLS, Auth: oc.Auth,
+				GRPCAddr:                       oc.GRPC,
+				HTTPAddr:                       oc.HTTP,
+				TLS:                            oc.TLS,
+				Auth:                           oc.Auth,
+				Insecure:                       oc.Insecure,
+				DangerAllowBearerOverPlaintext: oc.DangerAllowBearerOverPlaintext,
 			}, logger)
 		}},
 		{"ebpf", cfg.Sources.EBPF != nil, func() (pipeline.Source, error) {
@@ -151,27 +150,15 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		}
 	}
 
-	if warnings, err := cfg.Exporter.OTLP.TLS.Validate(); err != nil {
-		return nil, fmt.Errorf("exporter reef tls: %w", err)
-	} else {
-		for _, warning := range warnings {
-			logger.Warn("reef configuration warning", "edge", "otlp-exporter", "warning", warning)
-		}
-	}
-	if warnings, err := cfg.Exporter.OTLP.Auth.Validate(); err != nil {
-		return nil, fmt.Errorf("exporter reef auth: %w", err)
-	} else {
-		for _, warning := range warnings {
-			logger.Warn("reef configuration warning", "edge", "otlp-exporter", "warning", warning)
-		}
-	}
 	otlpExp, err := otlpexp.New(otlpexp.Config{
-		Endpoint: cfg.Exporter.OTLP.Endpoint,
-		Protocol: cfg.Exporter.OTLP.Protocol,
-		Timeout:  cfg.Exporter.OTLP.Timeout.Std(),
-		TLS:      cfg.Exporter.OTLP.TLS,
-		Auth:     cfg.Exporter.OTLP.Auth,
-		Headers:  cfg.Exporter.OTLP.Headers,
+		Endpoint:                       cfg.Exporter.OTLP.Endpoint,
+		Protocol:                       cfg.Exporter.OTLP.Protocol,
+		Timeout:                        cfg.Exporter.OTLP.Timeout.Std(),
+		TLS:                            cfg.Exporter.OTLP.TLS,
+		Auth:                           cfg.Exporter.OTLP.Auth,
+		Insecure:                       cfg.Exporter.OTLP.Insecure,
+		DangerAllowBearerOverPlaintext: cfg.Exporter.OTLP.DangerAllowBearerOverPlaintext,
+		Headers:                        cfg.Exporter.OTLP.Headers,
 	}, logger)
 	if err != nil {
 		return nil, err
@@ -190,7 +177,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		InitialBackoff: cfg.Exporter.OTLP.Retry.InitialBackoff.Std(),
 		MaxBackoff:     cfg.Exporter.OTLP.Retry.MaxBackoff.Std(),
 	})
-	var checks []healthCheck
+	var checks []readinessCheck
 	if cfg.Exporter.Spool.Dir != "" {
 		sp, err := spoolexp.New(exporter, spoolexp.Config{
 			Dir:      cfg.Exporter.Spool.Dir,
@@ -204,12 +191,12 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		// Close the backpressure loop: when the spool crosses its high-water
 		// mark, emit sheds at the source (pull) / returns 429 (push).
 		p.SetPressure(sp.UnderPressure)
-		checks = append(checks, healthCheck{"spool", func() error {
+		checks = append(checks, readinessCheck{"spool", func() error {
 			if !sp.Healthy() {
 				return fmt.Errorf("durability layer failing")
 			}
 			return nil
-		}}) // gate /healthz on durability
+		}})
 		selfobs.RegisterGaugeFunc("wisp_spool_bytes", "Current on-disk spool size in bytes.", func() float64 { return float64(sp.Bytes()) })
 		selfobs.RegisterGaugeFunc("wisp_spool_batches", "Current number of batches in the on-disk spool.", func() float64 { return float64(sp.Count()) })
 		selfobs.RegisterGaugeFunc("wisp_backpressure_active", "1 when the spool is above its high-water mark and sources are being shed.", func() float64 {
@@ -222,30 +209,135 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	}
 	p.AddExporter(exporter)
 
-	return &App{pipeline: p, selfEndpoint: cfg.Agent.SelfMetrics.Endpoint, logger: logger, scrape: scrapeSrc, checks: checks}, nil
+	return &App{
+		pipeline:     p,
+		selfEndpoint: cfg.Agent.SelfMetrics.Endpoint,
+		logger:       logger,
+		scrape:       scrapeSrc,
+		checks:       checks,
+		config:       cfg,
+	}, nil
+}
+
+// SetOperationalHandler installs the Gyre lifecycle handler. It must be called
+// before Start; Wisp intentionally serves operational state and self-metrics on
+// one listener so operators have one local endpoint to secure and scrape.
+func (a *App) SetOperationalHandler(handler http.Handler) {
+	a.operational = handler
+}
+
+// Ready checks dependencies that determine whether Wisp can durably accept and
+// forward telemetry. These checks must stay cheap because Gyre calls them from
+// /readyz.
+func (a *App) Ready(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if a == nil || a.pipeline == nil {
+		return fmt.Errorf("pipeline unavailable")
+	}
+	for _, c := range a.checks {
+		if err := c.check(); err != nil {
+			return fmt.Errorf("%s: %w", c.name, err)
+		}
+	}
+	return nil
+}
+
+type ReloadOutcome struct {
+	Changed []string
 }
 
 // Reload applies a new config to the running agent without a restart. Only the
 // safe, frequently-tuned surface is live-reloadable today - scrape targets,
 // file_sd globs, and scrape interval. Changes to listeners, the exporter
-// endpoint/protocol, the spool, or the processor chain require a restart and are
-// ignored here (logged by the caller). The config is validated first; on error
-// the running config is kept.
-func (a *App) Reload(cfg config.Config) error {
+// endpoint/protocol, the spool, or the processor chain are rejected. The config
+// is validated first; on any error the running config and generation are kept.
+func (a *App) Reload(cfg config.Config) (ReloadOutcome, error) {
 	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("reload: invalid config, keeping current: %w", err)
+		return ReloadOutcome{}, fmt.Errorf("reload: invalid config, keeping current: %w", err)
 	}
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
+	if fields := restartRequiredChanges(a.config, cfg); len(fields) > 0 {
+		return ReloadOutcome{}, fmt.Errorf("reload requires restart for %s; keeping current config", strings.Join(fields, ", "))
+	}
+	var changed []string
 	switch {
 	case a.scrape != nil && cfg.Sources.Scrape != nil:
 		sc := cfg.Sources.Scrape
-		a.scrape.Reload(scrapeConfigFrom(sc))
-		a.logger.Info("reloaded scrape source", "interval", sc.Interval.Std(), "targets", len(sc.Targets), "file_sd_globs", len(sc.FileSD))
+		if !reflect.DeepEqual(a.config.Sources.Scrape, cfg.Sources.Scrape) {
+			a.scrape.Reload(scrapeConfigFrom(sc))
+			a.logger.Info("reloaded scrape source", "interval", sc.Interval.Std(), "targets", len(sc.Targets), "file_sd_globs", len(sc.FileSD))
+			changed = append(changed, "sources.scrape")
+		}
 	case a.scrape != nil && cfg.Sources.Scrape == nil:
-		a.logger.Warn("reload: scrape source cannot be disabled without a restart; keeping current targets")
+		return ReloadOutcome{}, fmt.Errorf("reload requires restart for sources.scrape; keeping current config")
 	case a.scrape == nil && cfg.Sources.Scrape != nil:
-		a.logger.Warn("reload: enabling the scrape source requires a restart")
+		return ReloadOutcome{}, fmt.Errorf("reload requires restart for sources.scrape; keeping current config")
 	}
-	return nil
+	a.config = cfg
+	return ReloadOutcome{Changed: changed}, nil
+}
+
+// restartRequiredChanges returns config surfaces that cannot be changed without
+// rebuilding listeners, processors, exporters, or resource identity. Rejecting
+// these changes preserves last-known-good semantics instead of silently
+// accepting a generation that Wisp did not actually apply.
+func restartRequiredChanges(current, next config.Config) []string {
+	var fields []string
+	if !reflect.DeepEqual(current.Agent, next.Agent) {
+		fields = append(fields, "agent")
+	}
+	if !reflect.DeepEqual(current.Sources.Host, next.Sources.Host) {
+		fields = append(fields, "sources.host")
+	}
+	if !reflect.DeepEqual(current.Sources.OTLP, next.Sources.OTLP) {
+		fields = append(fields, "sources.otlp")
+	}
+	if !reflect.DeepEqual(current.Sources.EBPF, next.Sources.EBPF) {
+		fields = append(fields, "sources.ebpf")
+	}
+	if (current.Sources.Scrape == nil) != (next.Sources.Scrape == nil) {
+		fields = append(fields, "sources.scrape")
+	}
+	if !processorsEqual(current.Processors, next.Processors) {
+		fields = append(fields, "processors")
+	}
+	if !reflect.DeepEqual(current.Exporter, next.Exporter) {
+		fields = append(fields, "exporter")
+	}
+	if !reflect.DeepEqual(current.Resource, next.Resource) {
+		fields = append(fields, "resource")
+	}
+	return fields
+}
+
+// processorsEqual compares processor meaning rather than yaml.Node source
+// positions/styles. Gyre reloads use a canonical JSON spec, so raw YAML node
+// metadata necessarily differs from the startup document even when the
+// processor configuration is identical.
+func processorsEqual(current, next []config.ProcessorConfig) bool {
+	if len(current) != len(next) {
+		return false
+	}
+	for i := range current {
+		if current[i].Type != next[i].Type {
+			return false
+		}
+		var currentValue, nextValue any
+		if err := current[i].Raw.Decode(&currentValue); err != nil {
+			return false
+		}
+		if err := next[i].Raw.Decode(&nextValue); err != nil {
+			return false
+		}
+		if !reflect.DeepEqual(currentValue, nextValue) {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *App) Start(ctx context.Context) error {
@@ -267,15 +359,17 @@ func (a *App) Shutdown(ctx context.Context) error {
 func (a *App) startSelfMetrics(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", selfobs.Handler())
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		for _, c := range a.checks {
-			if err := c.check(); err != nil {
-				http.Error(w, c.name+" unhealthy: "+err.Error(), http.StatusServiceUnavailable)
-				return
-			}
-		}
-		w.WriteHeader(http.StatusOK)
-	})
+	if a.operational != nil {
+		mux.Handle("/healthz", a.operational)
+		mux.Handle("/readyz", a.operational)
+		mux.Handle("/status", a.operational)
+	} else {
+		// Keep a minimal liveness endpoint for direct App users. The production
+		// binary always installs Gyre before Start.
+		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+	}
 
 	ln, err := net.Listen("tcp", a.selfEndpoint)
 	if err != nil {
@@ -297,9 +391,8 @@ func (a *App) startSelfMetrics(ctx context.Context) error {
 	return nil
 }
 
-// buildProcessor constructs a pipeline processor from its config. The bool is
-// false (with nil error) for known-but-unimplemented types, which are skipped
-// with a warning rather than failing startup.
+// buildProcessor constructs a pipeline processor from its config. Unknown
+// processor types fail startup/reload rather than being silently ignored.
 func buildProcessor(pc config.ProcessorConfig, logger *slog.Logger) (pipeline.Processor, bool, error) {
 	switch pc.Type {
 	case "cardinality_limit":
@@ -335,8 +428,7 @@ func buildProcessor(pc config.ProcessorConfig, logger *slog.Logger) (pipeline.Pr
 		logger.Info("processor enabled", "type", pc.Type, "rules", len(rules))
 		return pr, true, nil
 	default:
-		logger.Warn("processor configured but not yet wired", "type", pc.Type)
-		return nil, false, nil
+		return nil, false, fmt.Errorf("unsupported processor type %q", pc.Type)
 	}
 }
 

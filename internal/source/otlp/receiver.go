@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yaop-labs/reef/bearer"
+	"github.com/yaop-labs/reef/edge"
 	"github.com/yaop-labs/reef/grpcreef"
 	"github.com/yaop-labs/reef/tlsconf"
 	"google.golang.org/grpc"
@@ -36,10 +37,12 @@ const maxBodyBytes = 16 << 20
 // a non-nil TLS secures both (mTLS when it requires client certs); non-empty
 // Reef TLS and bearer blocks secure both transports consistently.
 type Options struct {
-	GRPCAddr string
-	HTTPAddr string
-	TLS      *tlsconf.ServerConfig
-	Auth     *bearer.ServerConfig
+	GRPCAddr                       string
+	HTTPAddr                       string
+	TLS                            *tlsconf.ServerConfig
+	Auth                           *bearer.ServerConfig
+	Insecure                       bool
+	DangerAllowBearerOverPlaintext bool
 }
 
 // Receiver serves OTLP metrics over gRPC and/or HTTP.
@@ -52,6 +55,8 @@ type Receiver struct {
 
 	grpcOpts       []grpc.ServerOption
 	httpMiddleware func(http.Handler) http.Handler
+	grpcEdge       *grpcreef.ServerEdge
+	httpEdge       *edge.HTTPServer
 
 	emit func(context.Context, model.Batch) error
 
@@ -65,34 +70,59 @@ type Receiver struct {
 // New builds a Receiver from opts, materializing Reef's TLS and bearer layers
 // before any listener is opened so invalid credentials fail startup.
 func New(opts Options, logger *slog.Logger) (*Receiver, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	var grpcOpts []grpc.ServerOption
+	var grpcEdge *grpcreef.ServerEdge
 	if opts.GRPCAddr != "" {
-		var err error
-		grpcOpts, err = grpcreef.ServerOptions(opts.TLS, opts.Auth)
+		secured, err := grpcreef.NewServerEdge(edge.ServerConfig{
+			Bind:                           opts.GRPCAddr,
+			TLS:                            opts.TLS,
+			Auth:                           opts.Auth,
+			Insecure:                       opts.Insecure,
+			DangerAllowBearerOverPlaintext: opts.DangerAllowBearerOverPlaintext,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("otlp receiver grpc reef: %w", err)
 		}
+		grpcEdge = secured
+		grpcOpts = secured.Options
+		logWarnings(logger, "otlp-grpc-receiver", secured.Warnings)
 	}
 
 	httpMiddleware := func(next http.Handler) http.Handler { return next }
 	var httpTLS *tls.Config
+	var httpEdge *edge.HTTPServer
 	if opts.HTTPAddr != "" {
-		var err error
-		httpTLS, err = tlsconf.Server(opts.TLS)
+		secured, err := edge.NewHTTPServer(edge.ServerConfig{
+			Bind:                           opts.HTTPAddr,
+			TLS:                            opts.TLS,
+			Auth:                           opts.Auth,
+			Insecure:                       opts.Insecure,
+			DangerAllowBearerOverPlaintext: opts.DangerAllowBearerOverPlaintext,
+		})
 		if err != nil {
-			return nil, fmt.Errorf("otlp receiver http reef tls: %w", err)
+			_ = grpcEdge.Close()
+			return nil, fmt.Errorf("otlp receiver http reef: %w", err)
 		}
-		httpMiddleware, err = bearer.Require(opts.Auth)
-		if err != nil {
-			return nil, fmt.Errorf("otlp receiver http reef auth: %w", err)
-		}
+		httpEdge = secured
+		httpTLS = secured.TLSConfig
+		httpMiddleware = secured.Middleware
+		logWarnings(logger, "otlp-http-receiver", secured.Warnings)
 	}
-	tlsconf.WarnIfPlaintext(logger, "otlp-receiver", opts.TLS != nil && opts.TLS.Enabled)
 	return &Receiver{
 		grpcAddr: opts.GRPCAddr, httpAddr: opts.HTTPAddr, tls: httpTLS,
 		secure: opts.TLS != nil && opts.TLS.Enabled, logger: logger,
-		grpcOpts: grpcOpts, httpMiddleware: httpMiddleware, ready: make(chan struct{}),
+		grpcOpts: grpcOpts, httpMiddleware: httpMiddleware,
+		grpcEdge: grpcEdge, httpEdge: httpEdge, ready: make(chan struct{}),
 	}, nil
+}
+
+func logWarnings(logger *slog.Logger, edgeName string, warnings []edge.Warning) {
+	for _, warning := range warnings {
+		logger.Warn("reef configuration warning", "edge", edgeName, "warning", warning)
+	}
 }
 
 // Start binds the listeners and serves until ctx is canceled.
@@ -104,6 +134,7 @@ func (r *Receiver) Start(ctx context.Context, emit func(context.Context, model.B
 		ln, err := net.Listen("tcp", r.grpcAddr)
 		if err != nil {
 			close(r.ready)
+			_ = r.closeEdges()
 			return err
 		}
 		r.grpcLn = ln
@@ -121,6 +152,7 @@ func (r *Receiver) Start(ctx context.Context, emit func(context.Context, model.B
 				r.grpcSrv.Stop() // don't leak the gRPC server already started above
 			}
 			close(r.ready)
+			_ = r.closeEdges()
 			return err
 		}
 		mux := http.NewServeMux()
@@ -147,6 +179,7 @@ func (r *Receiver) Start(ctx context.Context, emit func(context.Context, model.B
 
 // Stop gracefully shuts the servers down.
 func (r *Receiver) Stop(ctx context.Context) error {
+	var shutdownErr error
 	if r.grpcSrv != nil {
 		// GracefulStop waits for in-flight RPCs with no deadline of its own, so a
 		// stalled client would hold it past the shutdown budget and block the
@@ -166,9 +199,13 @@ func (r *Receiver) Stop(ctx context.Context) error {
 		}
 	}
 	if r.httpSrv != nil {
-		return r.httpSrv.Shutdown(ctx)
+		shutdownErr = r.httpSrv.Shutdown(ctx)
 	}
-	return nil
+	return errors.Join(shutdownErr, r.closeEdges())
+}
+
+func (r *Receiver) closeEdges() error {
+	return errors.Join(r.httpEdge.Close(), r.grpcEdge.Close())
 }
 
 // GRPCAddr returns the bound gRPC address (for tests using :0).

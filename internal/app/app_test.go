@@ -71,7 +71,7 @@ func TestNewWiresFullAgent(t *testing.T) {
 		t.Error("scrape source should be captured for hot-reload")
 	}
 	if len(a.checks) == 0 {
-		t.Error("spool present -> a /healthz check should be registered")
+		t.Error("spool present -> a readiness check should be registered")
 	}
 }
 
@@ -103,22 +103,55 @@ resource: {attributes: {service.name: wisp}}
 	}
 }
 
+func TestNewRejectsUnknownProcessor(t *testing.T) {
+	y := `
+sources: {host: {interval: 1s}}
+processors:
+  - type: typo_processor
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}
+`
+	cfg, err := config.Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, err := New(cfg, discardLog()); err == nil {
+		t.Fatal("expected unsupported processor error")
+	}
+}
+
 func TestReload(t *testing.T) {
-	a, err := New(fullConfig(t), discardLog())
+	initial := fullConfig(t)
+	a, err := New(initial, discardLog())
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Valid reload with a changed scrape target set.
-	next := fullConfig(t)
-	next.Sources.Scrape.Targets = []config.ScrapeTarget{{Job: "new", Static: []string{"127.0.0.1:1234"}}}
-	if err := a.Reload(next); err != nil {
+	next := initial
+	scrape := *initial.Sources.Scrape
+	scrape.Targets = []config.ScrapeTarget{{Job: "new", Static: []string{"127.0.0.1:1234"}}}
+	next.Sources.Scrape = &scrape
+	if _, err := a.Reload(next); err != nil {
 		t.Fatalf("valid Reload: %v", err)
 	}
 	// Invalid reload is rejected and the running config is kept.
-	bad := fullConfig(t)
+	bad := initial
 	bad.Resource.Attributes = nil
-	if err := a.Reload(bad); err == nil {
+	if _, err := a.Reload(bad); err == nil {
 		t.Error("Reload should reject an invalid config")
+	}
+}
+
+func TestReloadRejectsRestartRequiredChanges(t *testing.T) {
+	initial := fullConfig(t)
+	a, err := New(initial, discardLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := initial
+	next.Exporter.OTLP.Endpoint = "127.0.0.1:24317"
+	if _, err := a.Reload(next); err == nil {
+		t.Fatal("expected exporter change to require restart")
 	}
 }
 

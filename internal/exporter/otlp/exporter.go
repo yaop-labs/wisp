@@ -25,10 +25,10 @@ import (
 	"time"
 
 	"github.com/yaop-labs/reef/bearer"
+	"github.com/yaop-labs/reef/edge"
 	"github.com/yaop-labs/reef/grpcreef"
 	"github.com/yaop-labs/reef/reefclient"
 	"github.com/yaop-labs/reef/tlsconf"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -65,16 +65,25 @@ type Config struct {
 	TLS *tlsconf.ClientConfig
 	// Auth is Reef's bearer-token source (inline, file, or environment).
 	Auth *bearer.ClientConfig
-	// Headers are sent with every export (e.g. {"authorization": "Bearer ..."}).
+	// Insecure explicitly allows plaintext to a non-loopback target.
+	Insecure bool
+	// DangerAllowBearerOverPlaintext is a separate explicit opt-in to expose a
+	// bearer token over plaintext.
+	DangerAllowBearerOverPlaintext bool
+	// Headers are non-auth metadata sent with every export (e.g. x-tenant).
+	// Authorization must be configured through Auth so Reef can enforce policy.
 	Headers map[string]string
 }
 
 func New(cfg Config, logger *slog.Logger) (*Exporter, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if cfg.Endpoint == "" {
 		return nil, fmt.Errorf("otlp exporter: endpoint required")
 	}
-	if cfg.Auth != nil && hasHeader(cfg.Headers, "authorization") {
-		return nil, fmt.Errorf("otlp exporter: configure bearer auth via auth or headers.authorization, not both")
+	if hasHeader(cfg.Headers, "authorization") {
+		return nil, fmt.Errorf("otlp exporter: configure bearer credentials via auth, not headers.authorization")
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -82,21 +91,38 @@ func New(cfg Config, logger *slog.Logger) (*Exporter, error) {
 	}
 
 	var (
-		tr  transport
-		err error
+		tr       transport
+		warnings []edge.Warning
+		err      error
 	)
 	switch cfg.Protocol {
 	case "", "grpc":
-		tr, err = newGRPCTransport(cfg.Endpoint, cfg.TLS, cfg.Auth, cfg.Headers)
+		tr, warnings, err = newGRPCTransport(
+			cfg.Endpoint,
+			cfg.TLS,
+			cfg.Auth,
+			cfg.Headers,
+			cfg.Insecure,
+			cfg.DangerAllowBearerOverPlaintext,
+		)
 	case "http":
-		tr, err = newHTTPTransport(cfg.Endpoint, cfg.TLS, cfg.Auth, cfg.Headers)
+		tr, warnings, err = newHTTPTransport(
+			cfg.Endpoint,
+			cfg.TLS,
+			cfg.Auth,
+			cfg.Headers,
+			cfg.Insecure,
+			cfg.DangerAllowBearerOverPlaintext,
+		)
 	default:
 		return nil, fmt.Errorf("otlp exporter: unknown protocol %q (use grpc or http)", cfg.Protocol)
 	}
 	if err != nil {
 		return nil, err
 	}
-	tlsconf.WarnIfPlaintext(logger, "otlp-exporter", cfg.TLS != nil && cfg.TLS.Enabled)
+	for _, warning := range warnings {
+		logger.Warn("reef configuration warning", "edge", "otlp-exporter", "warning", warning)
+	}
 	return &Exporter{tr: tr, timeout: timeout, logger: logger}, nil
 }
 
@@ -120,17 +146,32 @@ func (e *Exporter) Close() error { return e.tr.close() }
 // --- gRPC transport ---
 
 type grpcTransport struct {
-	conn   *grpc.ClientConn
+	conn   *grpcreef.Client
 	client colmetricspb.MetricsServiceClient
 	md     metadata.MD // auth/custom headers attached to each RPC
 }
 
-func newGRPCTransport(endpoint string, tlsConf *tlsconf.ClientConfig, auth *bearer.ClientConfig, headers map[string]string) (transport, error) {
-	conn, err := grpcreef.Dial(context.Background(), endpoint, tlsConf, auth)
+func newGRPCTransport(
+	endpoint string,
+	tlsConf *tlsconf.ClientConfig,
+	auth *bearer.ClientConfig,
+	headers map[string]string,
+	insecure bool,
+	dangerBearer bool,
+) (transport, []edge.Warning, error) {
+	conn, warnings, err := grpcreef.NewEdgeClient(edge.ClientConfig{
+		Target:                         endpoint,
+		TLS:                            tlsConf,
+		Auth:                           auth,
+		Insecure:                       insecure,
+		DangerAllowBearerOverPlaintext: dangerBearer,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("otlp exporter: dial %s: %w", endpoint, err)
+		return nil, nil, fmt.Errorf("otlp exporter: dial %s: %w", endpoint, err)
 	}
-	return &grpcTransport{conn: conn, client: colmetricspb.NewMetricsServiceClient(conn), md: metadataFrom(headers)}, nil
+	return &grpcTransport{
+		conn: conn, client: colmetricspb.NewMetricsServiceClient(conn), md: metadataFrom(headers),
+	}, warnings, nil
 }
 
 func (t *grpcTransport) send(ctx context.Context, req *colmetricspb.ExportMetricsServiceRequest) error {
@@ -177,21 +218,42 @@ func (t *grpcTransport) close() error { return t.conn.Close() }
 type httpTransport struct {
 	url     string
 	client  *http.Client
+	edge    *reefclient.EdgeClient
 	headers map[string]string
 }
 
-func newHTTPTransport(endpoint string, tlsConf *tlsconf.ClientConfig, auth *bearer.ClientConfig, headers map[string]string) (transport, error) {
-	url := strings.TrimRight(endpoint, "/")
-	if !strings.HasSuffix(url, "/v1/metrics") {
-		url += "/v1/metrics"
+func newHTTPTransport(
+	endpoint string,
+	tlsConf *tlsconf.ClientConfig,
+	auth *bearer.ClientConfig,
+	headers map[string]string,
+	insecure bool,
+	dangerBearer bool,
+) (transport, []edge.Warning, error) {
+	target := strings.TrimRight(endpoint, "/")
+	if !strings.Contains(target, "://") {
+		scheme := "http"
+		if tlsConf != nil && tlsConf.Enabled {
+			scheme = "https"
+		}
+		target = scheme + "://" + target
 	}
-	rt, err := reefclient.Transport(reefclient.Config{TLS: tlsConf, Auth: auth})
+	if !strings.HasSuffix(target, "/v1/metrics") {
+		target += "/v1/metrics"
+	}
+	rt, warnings, err := reefclient.NewEdgeTransport(edge.ClientConfig{
+		Target:                         target,
+		TLS:                            tlsConf,
+		Auth:                           auth,
+		Insecure:                       insecure,
+		DangerAllowBearerOverPlaintext: dangerBearer,
+	}, nil)
 	if err != nil {
-		return nil, fmt.Errorf("otlp exporter http reef: %w", err)
+		return nil, nil, fmt.Errorf("otlp exporter http reef: %w", err)
 	}
 	client := &http.Client{Transport: rt}
 	// Timeout is enforced per-request via the context; leave the client open.
-	return &httpTransport{url: url, client: client, headers: headers}, nil
+	return &httpTransport{url: target, client: client, edge: rt, headers: headers}, warnings, nil
 }
 
 func (t *httpTransport) send(ctx context.Context, req *colmetricspb.ExportMetricsServiceRequest) error {
@@ -237,7 +299,7 @@ func permanentHTTP(code int) bool {
 	}
 }
 
-func (t *httpTransport) close() error { return nil }
+func (t *httpTransport) close() error { return t.edge.Close() }
 
 // sortedKeys returns map keys in deterministic order (stable header emission).
 func sortedKeys(m map[string]string) []string {
