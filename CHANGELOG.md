@@ -57,7 +57,9 @@ No changes yet.
   detection entirely;
 - a timed-out host collector no longer stalls healthy collectors or shutdown;
   repeated cycles do not spawn duplicate work while its original syscall
-  remains blocked.
+  remains blocked;
+- journald command failures retain bounded stderr diagnostics reliably instead
+  of racing process cleanup against an asynchronous pipe reader.
 
 ## v0.10.0 — 2026-07-18
 

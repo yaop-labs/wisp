@@ -289,26 +289,17 @@ func (s *Source) collect(parent context.Context) error {
 	if err != nil {
 		return fmt.Errorf("journald: stdout pipe: %w", err)
 	}
-	stderr, err := command.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("journald: stderr pipe: %w", err)
-	}
+	var stderrOutput boundedBuffer
+	command.Stderr = &stderrOutput
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("journald: start journalctl: %w", err)
 	}
-	var stderrOutput boundedBuffer
-	stderrDone := make(chan struct{})
-	go func() {
-		_, _ = io.Copy(&stderrOutput, stderr)
-		close(stderrDone)
-	}()
 
 	parseErr := s.consume(ctx, stdout)
 	if parseErr != nil && command.Process != nil {
 		_ = command.Process.Kill()
 	}
 	waitErr := command.Wait()
-	<-stderrDone
 	if parseErr != nil {
 		return parseErr
 	}
