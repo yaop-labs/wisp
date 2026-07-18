@@ -77,6 +77,10 @@ resource: {attributes: {service.name: wisp}}`, "below high_watermark"},
 sources: {host: {interval: 15s}}
 exporter: {otlp: {endpoint: "x:4317", max_log_request_bytes: 1024}}
 resource: {attributes: {service.name: wisp}}`, "max_log_request_bytes"},
+		{"trace request split limit too small", `
+sources: {host: {interval: 15s}}
+exporter: {otlp: {endpoint: "x:4317", max_trace_request_bytes: 1024}}
+resource: {attributes: {service.name: wisp}}`, "max_trace_request_bytes"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -135,6 +139,7 @@ exporter:
   otlp:
     endpoint: "127.0.0.1:4317"
     max_log_request_bytes: 1048576
+    max_trace_request_bytes: 2097152
     auth:
       token: egress-key
     headers:
@@ -186,6 +191,12 @@ resource:
 	}
 	if cfg.Exporter.OTLP.MaxLogRequestBytes != 1<<20 {
 		t.Errorf("max_log_request_bytes = %d", cfg.Exporter.OTLP.MaxLogRequestBytes)
+	}
+	if cfg.Exporter.OTLP.MaxTraceRequestBytes != 2<<20 {
+		t.Errorf(
+			"max_trace_request_bytes = %d",
+			cfg.Exporter.OTLP.MaxTraceRequestBytes,
+		)
 	}
 	if cfg.Exporter.Spool.MaxAge.Std() != 6*time.Hour || cfg.Exporter.Spool.MaxBytes != 1<<20 {
 		t.Errorf("spool not decoded: %+v", cfg.Exporter.Spool)

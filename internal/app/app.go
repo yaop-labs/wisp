@@ -96,6 +96,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	p := pipeline.New(pipeline.Config{}, logger)
 	resource := buildResource(cfg.Resource, logger)
 	logRequestBytes := effectiveLogRequestBytes(cfg)
+	traceRequestBytes := effectiveTraceRequestBytes(cfg)
 
 	// Source registry: one entry per source type (name for logs, presence gate,
 	// and constructor). Adding a source is one entry here plus its config field
@@ -146,6 +147,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				Insecure:                       oc.Insecure,
 				DangerAllowBearerOverPlaintext: oc.DangerAllowBearerOverPlaintext,
 				MaxLogRequestBytes:             logRequestBytes,
+				MaxTraceRequestBytes:           traceRequestBytes,
 				Traces:                         traceOptions,
 			}, logger)
 			otlpRecv = receiver
@@ -343,6 +345,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			DangerAllowBearerOverPlaintext: cfg.Exporter.OTLP.DangerAllowBearerOverPlaintext,
 			Headers:                        cfg.Exporter.OTLP.Headers,
 			MaxLogRequestBytes:             logRequestBytes,
+			MaxTraceRequestBytes:           traceRequestBytes,
 		}
 		logsExporter, logsErr := otlpexp.NewLogs(signalConfig, logger)
 		if logsErr != nil {
@@ -361,6 +364,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			Insecure:                       cfg.Exporter.OTLP.Insecure,
 			DangerAllowBearerOverPlaintext: cfg.Exporter.OTLP.DangerAllowBearerOverPlaintext,
 			Headers:                        cfg.Exporter.OTLP.Headers,
+			MaxTraceRequestBytes:           traceRequestBytes,
 		}
 		tracesExporter, tracesErr := otlpexp.NewTraces(signalConfig, logger)
 		if tracesErr != nil {
@@ -386,7 +390,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			}
 		}
 		logger.Info("otlp traces processing configured",
-			"max_receiver_request_bytes", otlpwire.MaxReceiverRequestBytes,
+			"max_receiver_body_bytes", otlpwire.MaxReceiverRequestBytes,
+			"max_trace_request_bytes", traceRequestBytes,
 			"validation", traceValidation,
 			"resource_attributes", traceResourceAttributes,
 			"resource_conflict", traceResourceConflict)
@@ -573,7 +578,27 @@ const envelopeMetadataReserve = 256 << 10
 const fileLogRequestReserve = 64 << 10
 
 func effectiveLogRequestBytes(cfg config.Config) int {
-	limit := cfg.Exporter.OTLP.MaxLogRequestBytes
+	return effectiveSignalRequestBytes(
+		cfg,
+		signal.Logs,
+		cfg.Exporter.OTLP.MaxLogRequestBytes,
+	)
+}
+
+func effectiveTraceRequestBytes(cfg config.Config) int {
+	return effectiveSignalRequestBytes(
+		cfg,
+		signal.Traces,
+		cfg.Exporter.OTLP.MaxTraceRequestBytes,
+	)
+}
+
+func effectiveSignalRequestBytes(
+	cfg config.Config,
+	kind signal.Kind,
+	configured int,
+) int {
+	limit := configured
 	if limit <= 0 {
 		limit = otlpwire.DefaultMaxRequestBytes
 	}
@@ -581,8 +606,8 @@ func effectiveLogRequestBytes(cfg config.Config) int {
 		return limit
 	}
 	caps := []int64{cfg.Exporter.Spool.MaxBytes}
-	if logs, ok := cfg.Exporter.Spool.SignalLimits[string(signal.Logs)]; ok {
-		caps = append(caps, logs.MaxBytes)
+	if signalLimit, ok := cfg.Exporter.Spool.SignalLimits[string(kind)]; ok {
+		caps = append(caps, signalLimit.MaxBytes)
 	}
 	for _, capBytes := range caps {
 		if capBytes <= 0 {

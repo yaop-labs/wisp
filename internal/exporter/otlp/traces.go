@@ -3,6 +3,7 @@ package otlp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 
 	"github.com/yaop-labs/wisp/internal/httpx"
+	"github.com/yaop-labs/wisp/internal/otlpwire"
 	"github.com/yaop-labs/wisp/internal/pipeline"
 	"github.com/yaop-labs/wisp/internal/selfobs"
 	"github.com/yaop-labs/wisp/internal/signal"
@@ -31,14 +33,23 @@ type tracesTransport interface {
 // TracesExporter forwards opaque OTLP Traces envelopes without interpreting,
 // sampling, or rewriting spans.
 type TracesExporter struct {
-	tr      tracesTransport
-	timeout time.Duration
-	logger  *slog.Logger
+	tr              tracesTransport
+	timeout         time.Duration
+	logger          *slog.Logger
+	maxRequestBytes int
 }
 
 func NewTraces(cfg Config, logger *slog.Logger) (*TracesExporter, error) {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if cfg.MaxTraceRequestBytes < 0 ||
+		cfg.MaxTraceRequestBytes >
+			otlpwire.MaxReceiverRequestBytes {
+		return nil, fmt.Errorf(
+			"otlp traces exporter: max request bytes must be between 0 and %d",
+			otlpwire.MaxReceiverRequestBytes,
+		)
 	}
 	if cfg.Endpoint == "" {
 		return nil, fmt.Errorf("otlp traces exporter: endpoint required")
@@ -102,7 +113,12 @@ func NewTraces(cfg Config, logger *slog.Logger) (*TracesExporter, error) {
 	for _, warning := range warnings {
 		logger.Warn("reef configuration warning", "edge", "otlp-traces-exporter", "warning", warning)
 	}
-	return &TracesExporter{tr: tr, timeout: timeout, logger: logger}, nil
+	return &TracesExporter{
+		tr: tr, timeout: timeout, logger: logger,
+		maxRequestBytes: normalizedMaxTraceRequestBytes(
+			cfg.MaxTraceRequestBytes,
+		),
+	}, nil
 }
 
 func (e *TracesExporter) Send(ctx context.Context, envelope signal.Envelope) error {
@@ -119,17 +135,90 @@ func (e *TracesExporter) Send(ctx context.Context, envelope signal.Envelope) err
 
 	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
-	response, err := e.tr.sendTraces(ctx, &request, envelope.ID)
+	maxRequestBytes := normalizedMaxTraceRequestBytes(
+		e.maxRequestBytes,
+	)
+	split := proto.Size(&request) > maxRequestBytes
+	if split {
+		selfobs.OTLPTraceCompatSplits.Inc()
+		analysis, err := otlpwire.AnalyzeTraces(
+			&request,
+			maxRequestBytes,
+		)
+		if err != nil {
+			selfobs.ExportFailures.Inc()
+			return fmt.Errorf(
+				"otlp traces export: %w: %v",
+				pipeline.ErrPermanent,
+				err,
+			)
+		}
+		if analysis.RejectedSpans > 0 {
+			selfobs.ExportFailures.Inc()
+			return fmt.Errorf(
+				"%w: otlp traces export: legacy envelope "+
+					"contains %d spans in %d indivisible "+
+					"oversized traces",
+				pipeline.ErrPermanent,
+				analysis.RejectedSpans,
+				analysis.RejectedTraces,
+			)
+		}
+	}
+	_, err := otlpwire.ForEachTracesChunk(
+		&request,
+		maxRequestBytes,
+		func(chunk otlpwire.TracesChunk) error {
+			deliveryID := envelope.ID
+			if split {
+				deliveryID = derivedChunkID(
+					envelope.ID,
+					chunk.Index,
+				)
+			}
+			response, err := e.tr.sendTraces(
+				ctx,
+				chunk.Request,
+				deliveryID,
+			)
+			if err != nil {
+				return err
+			}
+			if partial := response.GetPartialSuccess(); partial != nil &&
+				partial.RejectedSpans > 0 {
+				selfobs.OTLPTraceSpansRejected.Add(
+					uint64(partial.RejectedSpans),
+				)
+				e.logger.Warn(
+					"otlp traces downstream partial success",
+					"rejected_spans",
+					partial.RejectedSpans,
+					"message",
+					boundedOTLPText(
+						partial.ErrorMessage,
+						1024,
+					),
+					"envelope_id",
+					deliveryID,
+				)
+			}
+			selfobs.OTLPTraceChunksExported.Inc()
+			return nil
+		},
+	)
 	if err != nil {
 		selfobs.ExportFailures.Inc()
+		if errors.Is(
+			err,
+			otlpwire.ErrTraceRequestMetadataTooLarge,
+		) {
+			return fmt.Errorf(
+				"otlp traces export: %w: %w",
+				pipeline.ErrPermanent,
+				err,
+			)
+		}
 		return fmt.Errorf("otlp traces export: %w", err)
-	}
-	if partial := response.GetPartialSuccess(); partial != nil && partial.RejectedSpans > 0 {
-		selfobs.OTLPTraceSpansRejected.Add(uint64(partial.RejectedSpans))
-		e.logger.Warn("otlp traces downstream partial success",
-			"rejected_spans", partial.RejectedSpans,
-			"message", boundedOTLPText(partial.ErrorMessage, 1024),
-			"envelope_id", envelope.ID)
 	}
 	selfobs.OTLPTraceRequestsExported.Inc()
 	selfobs.BatchesExported.Inc()
@@ -137,6 +226,13 @@ func (e *TracesExporter) Send(ctx context.Context, envelope signal.Envelope) err
 }
 
 func (e *TracesExporter) Close() error { return e.tr.close() }
+
+func normalizedMaxTraceRequestBytes(value int) int {
+	if value <= 0 {
+		return otlpwire.DefaultMaxRequestBytes
+	}
+	return value
+}
 
 type grpcTracesTransport struct {
 	conn   *grpcreef.Client

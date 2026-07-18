@@ -149,6 +149,7 @@ exporter:
     protocol: grpc
     timeout: 5s
     max_log_request_bytes: 3145728 # split logs below common 4 MiB receiver limits
+    max_trace_request_bytes: 3145728 # batch complete traces; never split one trace
     # tls:                      # verify the collector; supply a client cert for mTLS
     #   enabled: true
     #   ca_file: /etc/wisp/ca.crt

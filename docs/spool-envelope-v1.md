@@ -78,9 +78,12 @@ schema:    opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest/v1
 encoding:  application/x-protobuf
 ```
 
-One non-empty trace request is one envelope in `v0.8.x`. All resource/scope/span
-fields and protobuf unknown fields survive restart and export; trace-aware
-splitting and sampling are deliberately outside the v1 envelope contract.
+One non-empty trace request was one envelope in `v0.8.x`. In `v0.10.x`, the
+receiver may create multiple v1 envelopes containing complete traces; all
+resource/scope/span fields and protobuf unknown fields still survive restart
+and export. The envelope schema and disk format did not change. Exporters
+remain able to read and compatibility-split whole-request v1 records written
+by older versions. Sampling remains outside the v1 envelope contract.
 
 ## Signal-neutral queue
 

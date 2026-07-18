@@ -16,6 +16,7 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/yaop-labs/wisp/internal/otlpwire"
 	"github.com/yaop-labs/wisp/internal/pipeline"
 	"github.com/yaop-labs/wisp/internal/selfobs"
 	"github.com/yaop-labs/wisp/internal/signal"
@@ -417,6 +418,18 @@ func TestTraceProcessingOptionsValidateAtReceiverConstruction(t *testing.T) {
 		)
 		if err == nil {
 			t.Fatalf("invalid direct trace options accepted: %+v", options)
+		}
+	}
+	for _, limit := range []int{
+		-1,
+		otlpwire.MaxReceiverRequestBytes + 1,
+	} {
+		_, err := New(
+			Options{MaxTraceRequestBytes: limit},
+			slog.New(slog.NewTextHandler(io.Discard, nil)),
+		)
+		if err == nil {
+			t.Fatalf("invalid direct trace limit accepted: %d", limit)
 		}
 	}
 }

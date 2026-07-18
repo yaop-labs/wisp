@@ -157,3 +157,22 @@ resource:
 		t.Fatal(err)
 	}
 }
+
+func TestEffectiveTraceRequestBytesFitsSpoolBudgets(t *testing.T) {
+	cfg := config.Config{}
+	if got := effectiveTraceRequestBytes(cfg); got != 3<<20 {
+		t.Fatalf("default=%d, want 3MiB", got)
+	}
+	cfg.Exporter.Spool.Dir = "/spool"
+	cfg.Exporter.Spool.MaxBytes = 1 << 20
+	if got := effectiveTraceRequestBytes(cfg); got != 768<<10 {
+		t.Fatalf("global cap result=%d, want 768KiB", got)
+	}
+	cfg.Exporter.Spool.SignalLimits =
+		map[string]config.SpoolSignalLimit{
+			"traces": {MaxBytes: 512 << 10},
+		}
+	if got := effectiveTraceRequestBytes(cfg); got != 256<<10 {
+		t.Fatalf("traces cap result=%d, want 256KiB", got)
+	}
+}

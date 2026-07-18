@@ -281,6 +281,7 @@ type OTLPExporter struct {
 	DangerAllowBearerOverPlaintext bool                  `yaml:"danger_allow_bearer_over_plaintext"`
 	Headers                        map[string]string     `yaml:"headers"` // additional non-auth headers
 	MaxLogRequestBytes             int                   `yaml:"max_log_request_bytes"`
+	MaxTraceRequestBytes           int                   `yaml:"max_trace_request_bytes"`
 }
 
 // RetryConfig configures exporter retries.
@@ -759,6 +760,15 @@ func (c *Config) Validate() error {
 			return fmt.Errorf(
 				"exporter.otlp.max_log_request_bytes must be between %d and %d",
 				64<<10, otlpwire.MaxReceiverRequestBytes,
+			)
+		}
+	}
+	if value := c.Exporter.OTLP.MaxTraceRequestBytes; value != 0 {
+		if value < 64<<10 || value > otlpwire.MaxReceiverRequestBytes {
+			return fmt.Errorf(
+				"exporter.otlp.max_trace_request_bytes must be between %d and %d",
+				64<<10,
+				otlpwire.MaxReceiverRequestBytes,
 			)
 		}
 	}

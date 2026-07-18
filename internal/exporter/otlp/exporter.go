@@ -76,6 +76,9 @@ type Config struct {
 	// MaxLogRequestBytes bounds each OTLP Logs request after splitting.
 	// Zero applies the safe default.
 	MaxLogRequestBytes int
+	// MaxTraceRequestBytes bounds each OTLP Traces request after grouping by
+	// trace ID. Zero applies the safe default.
+	MaxTraceRequestBytes int
 }
 
 func New(cfg Config, logger *slog.Logger) (*Exporter, error) {

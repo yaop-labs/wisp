@@ -48,6 +48,8 @@ versioning without treating `v1.0.0` as a schedule target.
   and fixed-cardinality reason metrics.
 - explicit OTLP trace resource enrichment with preserve, replace, and reject
   conflict policies that never inherit the agent's own resource identity.
+- bounded complete-trace batching across resource and scope boundaries, exact
+  oversized-trace partial success, and fixed-cardinality split telemetry.
 
 ### Changed
 
@@ -63,6 +65,9 @@ versioning without treating `v1.0.0` as a schedule target.
   queue with independent pressure and capacity controls.
 - OTLP/HTTP trace failures now return protobuf `google.rpc.Status` bodies
   alongside their protocol-defined HTTP status codes.
+- trace request size is automatically constrained by its spool budget; legacy
+  whole-request envelopes are compatibility-split with deterministic child
+  IDs after an atomic oversized-trace preflight.
 - file checkpoints advance only after downstream delivery or spool fsync, so
   admission failures retry without data loss and crashes have an explicit
   at-least-once duplicate boundary.

@@ -11,7 +11,8 @@ Traces paths:
   discovery;
 - OTLP metrics, logs, and traces receive/export over gRPC and HTTP/protobuf;
 - bounded OTLP trace correlation validation with lossless report mode, explicit
-  strict rejection, and conflict-controlled resource enrichment;
+  strict rejection, conflict-controlled resource enrichment, complete-trace
+  batching, and oversized-trace partial success;
 - bounded text and Kubernetes CRI file tailing with crash-safe checkpoints,
   CRI timestamp/fragment assembly, path-derived Kubernetes resource identity,
   bounded multiline assembly, explicit text timestamps, pre-spool content
@@ -26,7 +27,7 @@ Traces paths:
 - Reef TLS, mTLS, and bearer authentication on ingress and egress;
 - Gyre lifecycle, readiness, status, and generation-aware reload.
 
-Trace-aware batching/sampling and the actual eBPF backend remain planned, not
+Explicit trace sampling and the actual eBPF backend remain planned, not
 silently simulated.
 See [the roadmap](docs/ROADMAP.md) and
 [the signal extensibility ADR](docs/adr/0001-signal-extensible-core.md).

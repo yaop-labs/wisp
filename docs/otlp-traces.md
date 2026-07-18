@@ -1,7 +1,8 @@
 # OTLP Traces path
 
-Status: durable passthrough implemented in `v0.8.x`; correlation validation
-and explicit resource enrichment implemented in `v0.10.x`.
+Status: durable passthrough implemented in `v0.8.x`; correlation validation,
+explicit resource enrichment, and bounded complete-trace batching implemented
+in `v0.10.x`.
 
 Wisp accepts OTLP Traces on the same configured receiver listeners as metrics
 and logs:
@@ -9,12 +10,12 @@ and logs:
 - gRPC `opentelemetry.proto.collector.trace.v1.TraceService/Export`;
 - HTTP `POST /v1/traces` with `application/x-protobuf`.
 
-Every non-empty request is deterministically serialized into one `traces`
-durability envelope. Wisp does not convert spans into its metric model, run
-metric processors on them, or sample them. Validation in the default `report`
-mode does not rewrite resource, scope, span, event, link, status, timing, or
-protobuf unknown fields. Explicit resource enrichment is the only mutation in
-this increment.
+Every non-empty request is validated and grouped into bounded durability
+envelopes containing complete traces. Wisp does not convert spans into its
+metric model, run metric processors on them, or sample them. Validation in the
+default `report` mode does not rewrite resource, scope, span, event, link,
+status, timing, or protobuf unknown fields. Explicit resource enrichment is
+the only payload mutation in this milestone.
 
 A bounded common string resource identity is duplicated into envelope metadata
 only when every ResourceSpans entry agrees; the complete OTLP resource remains
@@ -89,8 +90,10 @@ envelope resource identity from the enriched payload.
 
 ## Delivery and duplicate boundary
 
-- A successful receiver response means the complete request was exported or
-  fsync'd to the shared spool.
+- A successful receiver response without partial success means every trace in
+  the request was exported or fsync'd to the shared spool.
+- A successful partial-success response means every accepted trace was
+  exported or fsync'd and the reported oversized spans were not accepted.
 - Global or traces-specific pressure returns gRPC `RESOURCE_EXHAUSTED` or HTTP
   `429` before admission.
 - OTLP/HTTP errors use protobuf `google.rpc.Status` response bodies; bad trace
@@ -103,37 +106,68 @@ envelope resource identity from the enriched payload.
 - `x-wisp-envelope-id` and `x-wisp-signal-kind: traces` accompany every
   downstream gRPC or HTTP delivery.
 
-The whole request is the durability and retry unit. If downstream accepts the
-request but Wisp loses the response, or Wisp accepts it durably but the
-upstream client loses Wisp's response, the same envelope or upstream request
-can be delivered again. Coral may use the stable envelope ID as a bounded,
-tenant-aware deduplication key. It is delivery metadata, not authentication.
+Each bounded chunk is an independent durability and retry unit with its own
+stable envelope ID. If downstream accepts a chunk but Wisp loses the response,
+or Wisp accepts chunks durably but the upstream client loses Wisp's response,
+the same chunk or upstream request can be delivered again. A failure while
+admitting a later chunk causes the request to fail; a client retry can
+therefore duplicate earlier chunks that were already made durable. Coral may
+use the stable envelope ID as a bounded, tenant-aware deduplication key. It is
+delivery metadata, not authentication.
 
 Wisp treats an OTLP partial-success response as protocol success because
 retrying the whole request would duplicate accepted spans. Rejected spans
 increment `wisp_otlp_trace_spans_rejected_total` and a bounded warning records
 the downstream message.
 
-## Bounds and future trace processing
+## Bounded complete-trace batching
 
-The receiver bounds protobuf bodies at 16 MiB. In `v0.8.x`, one incoming trace
-request remains one envelope: Wisp intentionally does not split a trace across
-an arbitrary span boundary because that can separate parents, children, links,
-and trace-level processing state.
+The receiver bounds protobuf bodies at 16 MiB. The chunk target defaults to
+3 MiB and is configured as
+`exporter.otlp.max_trace_request_bytes`; Wisp automatically narrows it when the
+global or traces-specific spool budget cannot safely fit that envelope plus
+durability metadata. The configured value must be between 64 KiB and 16 MiB:
 
-Operators using a traces-specific spool cap should make it larger than the
-largest request they expect to survive during an outage, including envelope
-metadata. If one envelope cannot fit the configured global or traces cap,
-Wisp does not acknowledge it as durable.
+```yaml
+exporter:
+  otlp:
+    max_trace_request_bytes: 3145728
+```
 
-Trace-aware batching, oversized-trace handling, and explicit optional sampling
-remain in this milestone. They must preserve the current default of lossless
-admission and must not silently change trace semantics.
+Wisp groups all spans with the same valid trace ID across ResourceSpans and
+ScopeSpans boundaries. Traces retain first-seen order, spans retain their
+original order and metadata, and one trace is never split. Invalid trace IDs
+are separate indivisible units in validation `report` mode so compatibility
+remains lossless. Request-level protobuf unknown fields are retained on exactly
+one chunk; if they cannot fit alongside any accepted trace, the request is
+atomically rejected before any chunk is emitted.
+
+An indivisible trace larger than the chunk target is excluded while smaller
+traces continue. The receiver returns OTLP partial success with the exact
+rejected span count, including when every trace is oversized. Per the OTLP
+contract, partial success is not retryable; operators must increase the bound
+or reduce trace size to accept such traces.
+
+Old whole-request v1 spool envelopes remain readable. The exporter
+compatibility-splits them using deterministic child delivery IDs. It first
+preflights the complete legacy payload: an indivisible oversized trace or
+unplaceable request metadata rejects/quarantines the envelope before any chunk
+is sent, preventing a partially exported legacy record.
+
+The envelope disk format is unchanged and the new config field is additive.
+Explicit optional sampling remains future work and must not silently change
+the default lossless semantics.
 
 Self-observability includes:
 
 - `wisp_otlp_trace_spans_received_total`;
 - `wisp_otlp_trace_requests_received_total`;
+- `wisp_otlp_trace_chunks_total`;
+- `wisp_otlp_trace_split_requests_total`;
+- `wisp_otlp_trace_oversized_traces_total`;
+- `wisp_otlp_trace_oversized_spans_total`;
+- `wisp_otlp_trace_compat_split_attempts_total`;
+- `wisp_otlp_trace_chunks_exported_total`;
 - `wisp_otlp_trace_requests_exported_total`;
 - `wisp_otlp_trace_spans_rejected_total`;
 - `wisp_otlp_trace_validation_requests_total`;

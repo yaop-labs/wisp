@@ -64,7 +64,23 @@ var (
 	OTLPTraceSpansReceived    = newCounter("wisp_otlp_trace_spans_received_total", "Trace spans durably accepted from OTLP.")
 	OTLPTraceRequestsReceived = newCounter(
 		"wisp_otlp_trace_requests_received_total",
-		"Non-empty OTLP Traces requests admitted as durable envelopes.",
+		"Non-empty OTLP Traces requests completely processed through durable chunks and explicit oversized-trace rejection.",
+	)
+	OTLPTraceChunks = newCounter(
+		"wisp_otlp_trace_chunks_total",
+		"Trace-aware OTLP chunks durably admitted without splitting a trace ID.",
+	)
+	OTLPTraceSplitRequests = newCounter(
+		"wisp_otlp_trace_split_requests_total",
+		"Incoming OTLP Traces requests that required trace-aware bounded splitting.",
+	)
+	OTLPTraceOversizedTraces = newCounter(
+		"wisp_otlp_trace_oversized_traces_total",
+		"Complete traces rejected because one indivisible trace exceeded the configured request bound.",
+	)
+	OTLPTraceOversizedSpans = newCounter(
+		"wisp_otlp_trace_oversized_spans_total",
+		"Spans rejected with their complete trace because that trace exceeded the configured request bound.",
 	)
 	OTLPTraceRequestsExported = newCounter(
 		"wisp_otlp_trace_requests_exported_total",
@@ -73,6 +89,14 @@ var (
 	OTLPTraceSpansRejected = newCounter(
 		"wisp_otlp_trace_spans_rejected_total",
 		"Trace spans rejected in an OTLP downstream partial-success response.",
+	)
+	OTLPTraceCompatSplits = newCounter(
+		"wisp_otlp_trace_compat_split_attempts_total",
+		"Exporter-side trace-aware split attempts for legacy oversized Traces envelopes.",
+	)
+	OTLPTraceChunksExported = newCounter(
+		"wisp_otlp_trace_chunks_exported_total",
+		"Bounded OTLP Traces chunks successfully exported downstream.",
 	)
 	OTLPTraceValidationRequests = newCounter(
 		"wisp_otlp_trace_validation_requests_total",

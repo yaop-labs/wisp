@@ -50,7 +50,7 @@ second pipeline rewrite.
 ## v0.10.x — trace processing depth
 
 - correlation validation and explicit resource enrichment — implemented;
-- oversized-trace handling and fair batching;
+- oversized-trace handling and fair complete-trace batching — implemented;
 - explicit optional sampling, with no hidden semantic rewriting.
 
 ## v0.11.x — Linux host depth
