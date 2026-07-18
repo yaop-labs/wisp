@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFileLogConfigParses(t *testing.T) {
@@ -43,6 +44,34 @@ resource:
 		len(cfg.Sources.FileLog.Redaction.Patterns) != 2 ||
 		cfg.Sources.FileLog.Redaction.Replacement != "[MASKED]" {
 		t.Fatalf("filelog config=%+v", cfg.Sources.FileLog)
+	}
+}
+
+func TestFileLogMultilineConfigParses(t *testing.T) {
+	cfg, err := Parse([]byte(`
+sources:
+  filelog:
+    include: ["/var/log/app/*.log"]
+    checkpoint_file: "/var/lib/wisp/filelog.json"
+    format: text
+    multiline:
+      start_pattern: '^\d{4}-\d{2}-\d{2} '
+      max_lines: 128
+      flush_after: 3s
+exporter:
+  otlp:
+    endpoint: "127.0.0.1:4317"
+resource:
+  attributes:
+    service.name: checkout
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	multiline := cfg.Sources.FileLog.Multiline
+	if multiline == nil || multiline.MaxLines != 128 ||
+		multiline.FlushAfter.Std() != 3*time.Second {
+		t.Fatalf("multiline config=%+v", multiline)
 	}
 }
 
@@ -96,6 +125,26 @@ func TestFileLogConfigRejectsUnsafeBounds(t *testing.T) {
 			name: "empty matching regexp",
 			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    redaction:\n      patterns: ['a*']",
 			want: "empty input",
+		},
+		{
+			name: "multiline rejects CRI",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    format: cri\n    multiline:\n      start_pattern: '^START '",
+			want: "text format",
+		},
+		{
+			name: "multiline requires start pattern",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    multiline: {}",
+			want: "start_pattern",
+		},
+		{
+			name: "multiline rejects empty match",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    multiline:\n      start_pattern: 'a*'",
+			want: "empty input",
+		},
+		{
+			name: "multiline rejects short flush",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    multiline:\n      start_pattern: '^START '\n      flush_after: 1ms",
+			want: "flush_after",
 		},
 		{
 			name: "batch below line",

@@ -10,16 +10,17 @@ import (
 )
 
 const (
-	checkpointVersion  = 2
+	checkpointVersion  = 3
 	maxCheckpointBytes = 4 << 20
 	maxCheckpointFiles = 10_000
 )
 
 type checkpoint struct {
-	Identity    string `json:"identity"`
-	Offset      int64  `json:"offset"`
-	Dropping    bool   `json:"dropping_oversized,omitempty"`
-	CRIDropping bool   `json:"cri_dropping_oversized,omitempty"`
+	Identity          string `json:"identity"`
+	Offset            int64  `json:"offset"`
+	Dropping          bool   `json:"dropping_oversized,omitempty"`
+	CRIDropping       bool   `json:"cri_dropping_oversized,omitempty"`
+	MultilineDropping bool   `json:"multiline_dropping_oversized,omitempty"`
 }
 
 type checkpointDocument struct {
@@ -54,7 +55,8 @@ func loadCheckpointStore(path string) (*checkpointStore, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil, fmt.Errorf("filelog checkpoint: trailing JSON data")
 	}
-	if document.Version != 1 && document.Version != checkpointVersion {
+	if document.Version != 1 && document.Version != 2 &&
+		document.Version != checkpointVersion {
 		return nil, fmt.Errorf("filelog checkpoint: unsupported version %d", document.Version)
 	}
 	if len(document.Files) > maxCheckpointFiles {

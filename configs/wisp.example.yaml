@@ -71,6 +71,10 @@ sources:
   #       - '(?i)authorization:\s*bearer\s+\S+'
   #       - 'token=[^&\s]+'
   #     replacement: '[REDACTED]'      # literal; this is the default
+  #   multiline:                       # text format only; joins stack traces
+  #     start_pattern: '^\d{4}-\d{2}-\d{2}T'
+  #     max_lines: 256
+  #     flush_after: 5s
   #
   # Kubernetes CRI logs: use the real pod files for rotation recovery, not
   # the symlinks under /var/log/containers.

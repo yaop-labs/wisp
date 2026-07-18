@@ -29,6 +29,9 @@ versioning without treating `v1.0.0` as a schedule target.
 - bounded ordered file-log content redaction before OTLP encoding or durable
   spool admission, covering text, assembled/partial CRI, and malformed CRI
   records without regex backtracking.
+- bounded start-pattern multiline text framing with inactivity and rotation
+  boundaries, redaction after assembly, restart-safe pending replay, and
+  automatic recovery after oversized records.
 
 ### Changed
 
@@ -53,6 +56,8 @@ versioning without treating `v1.0.0` as a schedule target.
 - redaction replacements are literal and bounded by `max_line_bytes`; records
   whose replacement expansion exceeds the bound are intentionally dropped
   without falling back to secret-bearing content.
+- filelog checkpoint versions 1 and 2 remain readable and upgrade to version 3
+  on write; v3 records multiline oversized-continuation state.
 
 ## v0.7.0 — 2026-07-17
 

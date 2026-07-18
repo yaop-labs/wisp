@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -892,23 +893,28 @@ func TestCheckpointRejectsUnknownFields(t *testing.T) {
 	}
 }
 
-func TestCheckpointVersionOneLoadsAndUpgrades(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "checkpoint.json")
-	if err := os.WriteFile(path, []byte(`{"version":1,"files":{}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store, err := loadCheckpointStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.save(); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `"version":2`) {
-		t.Fatalf("checkpoint was not upgraded: %s", data)
+func TestCheckpointOlderVersionsLoadAndUpgrade(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "checkpoint.json")
+			document := fmt.Sprintf(`{"version":%d,"files":{}}`, version)
+			if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			store, err := loadCheckpointStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.save(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), `"version":3`) {
+				t.Fatalf("checkpoint was not upgraded: %s", data)
+			}
+		})
 	}
 }

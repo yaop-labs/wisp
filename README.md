@@ -12,7 +12,8 @@ and Traces passthrough:
 - OTLP metrics, logs, and traces receive/export over gRPC and HTTP/protobuf;
 - bounded text and Kubernetes CRI file tailing with crash-safe checkpoints,
   CRI timestamp/fragment assembly, path-derived Kubernetes resource identity,
-  pre-spool content redaction, and rotate/truncate detection;
+  bounded multiline assembly, pre-spool content redaction, and
+  rotate/truncate detection;
 - Linux host metrics from `/proc`;
 - relabel, counter-reset, and cardinality processors;
 - OTLP gRPC/HTTP export with retry, bounded crash-safe spool, and backpressure;

@@ -43,6 +43,50 @@ Each record contains:
 In `text` mode the record observed time is the collection time and no event
 timestamp is inferred.
 
+## Bounded multiline framing
+
+Text mode can join physical lines into one logical record using a start
+pattern:
+
+```yaml
+sources:
+  filelog:
+    format: text
+    multiline:
+      start_pattern: '^\d{4}-\d{2}-\d{2}T'
+      max_lines: 256
+      flush_after: 5s
+```
+
+A matching line starts a record. Following non-matching lines are appended
+with one `\n`; the next matching line completes the previous record. A
+non-matching line encountered without a pending record starts an orphan record
+instead of being discarded. Multiline cannot be combined with CRI framing,
+which already has its own `P…F` record boundaries.
+
+An active file's final record remains uncheckpointed until one of these
+boundaries:
+
+- the next start-pattern match;
+- the file has not been modified for `flush_after`;
+- its inode is drained during rotation.
+
+The default `flush_after` is 5 seconds. Timeout and rotation completions carry
+`wisp.multiline.flush_reason` so downstream can distinguish inferred
+boundaries. Before a boundary, restart rereads from the pending record's first
+physical line; no unbounded body is serialized into the checkpoint.
+
+`max_line_bytes` bounds the assembled body, `max_lines` defaults to 256 and is
+limited to 4096, and the physical span must fit one
+`max_read_bytes_per_poll` window once reading begins at the record. When any
+bound is exceeded, Wisp drops the whole logical record and persists a bounded
+drop state while skipping continuations. Collection resumes automatically at
+the next line matching `start_pattern`. This prevents an unending stack trace
+or stream of empty continuations from wedging the file.
+
+Redaction runs after multiline assembly, so a rule may intentionally match
+across joined lines with an RE2 `(?s)` expression.
+
 ## Content redaction before durability
 
 Redaction is opt-in and runs on the fully framed logical body before Wisp
@@ -172,11 +216,13 @@ Wisp.
 
 ## Durability and duplicate boundary
 
-The checkpoint is a bounded, versioned JSON document. Version 2 adds the
-bounded CRI oversized-sequence continuation state. Wisp reads version 1 and
-upgrades it on the next write. A pre-CRI binary rejects version 2 explicitly
-instead of silently resetting offsets, so rolling back requires retaining a
-compatible checkpoint or accepting an operator-selected `start_at` boundary.
+The checkpoint is a bounded, versioned JSON document. Version 2 added the
+bounded CRI oversized-sequence continuation state; version 3 adds the
+equivalent multiline continuation state. Wisp reads versions 1 and 2 and
+upgrades them on the next write. Older binaries reject newer versions
+explicitly instead of silently resetting offsets, so rolling back requires
+retaining a compatible checkpoint or accepting an operator-selected
+`start_at` boundary.
 
 Wisp writes a temporary
 file, fsyncs it, renames it atomically, and fsyncs the parent directory.
@@ -261,8 +307,9 @@ Self-observability includes:
 - `wisp_filelog_kubernetes_enriched_records_total`;
 - `wisp_filelog_kubernetes_enrichment_misses_total`;
 - `wisp_filelog_redaction_matches_total`;
-- `wisp_filelog_redaction_dropped_records_total`.
+- `wisp_filelog_redaction_dropped_records_total`;
+- `wisp_filelog_multiline_forced_flushes_total`;
+- `wisp_filelog_multiline_oversized_records_total`.
 
-Multiline application parsing beyond CRI runtime fragments, content
-timestamps for non-CRI text, API-backed Kubernetes metadata enrichment, and
-journald collection remain separate increments.
+Content timestamps for non-CRI text, API-backed Kubernetes metadata
+enrichment, and journald collection remain separate increments.

@@ -111,6 +111,14 @@ var (
 		"wisp_filelog_redaction_dropped_records_total",
 		"File log records intentionally dropped because redaction expansion exceeded max_line_bytes.",
 	)
+	FileLogMultilineForcedFlushes = newCounter(
+		"wisp_filelog_multiline_forced_flushes_total",
+		"Multiline records completed by inactivity timeout or rotated-file drain.",
+	)
+	FileLogMultilineOversized = newCounter(
+		"wisp_filelog_multiline_oversized_records_total",
+		"Multiline records dropped after exceeding content, line-count, or read-span bounds.",
+	)
 )
 
 // gaugeFunc is a gauge whose current value is read from fn at scrape time.

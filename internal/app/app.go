@@ -154,6 +154,14 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 					Replacement: fc.Redaction.Replacement,
 				}
 			}
+			var multiline *filelogsrc.MultilineConfig
+			if fc.Multiline != nil {
+				multiline = &filelogsrc.MultilineConfig{
+					StartPattern: fc.Multiline.StartPattern,
+					MaxLines:     fc.Multiline.MaxLines,
+					FlushAfter:   fc.Multiline.FlushAfter.Std(),
+				}
+			}
 			source, err := filelogsrc.New(filelogsrc.Config{
 				Include:        fc.Include,
 				Exclude:        fc.Exclude,
@@ -163,6 +171,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				Format:         fc.Format,
 				Kubernetes:     kubernetes,
 				Redaction:      redaction,
+				Multiline:      multiline,
 				MaxLineBytes:   maxLineBytes,
 				MaxBatchBytes:  maxBatchBytes,
 				MaxReadBytes:   fc.MaxReadBytes,
@@ -179,6 +188,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				"format", source.Format(),
 				"kubernetes_enrichment", fc.Kubernetes != nil,
 				"redaction_rules", fileLogRedactionRuleCount(fc.Redaction),
+				"multiline", fc.Multiline != nil,
 				"max_line_bytes", maxLineBytes,
 				"max_batch_bytes", maxBatchBytes)
 			return source, nil

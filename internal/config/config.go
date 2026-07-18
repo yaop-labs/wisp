@@ -135,6 +135,7 @@ type FileLogSource struct {
 	Format         string             `yaml:"format"`
 	Kubernetes     *FileLogKubernetes `yaml:"kubernetes"`
 	Redaction      *FileLogRedaction  `yaml:"redaction"`
+	Multiline      *FileLogMultiline  `yaml:"multiline"`
 	MaxLineBytes   int                `yaml:"max_line_bytes"`
 	MaxBatchBytes  int                `yaml:"max_batch_bytes"`
 	MaxReadBytes   int64              `yaml:"max_read_bytes_per_poll"`
@@ -149,6 +150,13 @@ type FileLogKubernetes struct {
 type FileLogRedaction struct {
 	Patterns    []string `yaml:"patterns"`
 	Replacement string   `yaml:"replacement"`
+}
+
+// FileLogMultiline joins text lines until the next start-pattern match.
+type FileLogMultiline struct {
+	StartPattern string   `yaml:"start_pattern"`
+	MaxLines     int      `yaml:"max_lines"`
+	FlushAfter   Duration `yaml:"flush_after"`
 }
 
 // EBPFSource configures kernel-side probes (Linux-only, requires CAP_BPF).
@@ -371,6 +379,30 @@ func (c *Config) Validate() error {
 			if len(replacement) > 256 || !utf8.ValidString(replacement) ||
 				strings.IndexFunc(replacement, unicode.IsControl) >= 0 {
 				return fmt.Errorf("sources.filelog.redaction.replacement must be valid printable UTF-8 up to 256 bytes")
+			}
+		}
+		if f.Multiline != nil {
+			if f.Format == "cri" {
+				return fmt.Errorf("sources.filelog.multiline is only supported with text format")
+			}
+			if f.Multiline.StartPattern == "" ||
+				len(f.Multiline.StartPattern) > 1024 {
+				return fmt.Errorf("sources.filelog.multiline.start_pattern must contain between 1 and 1024 bytes")
+			}
+			compiled, err := regexp.Compile(f.Multiline.StartPattern)
+			if err != nil {
+				return fmt.Errorf("sources.filelog.multiline.start_pattern is not a valid regular expression")
+			}
+			if compiled.MatchString("") {
+				return fmt.Errorf("sources.filelog.multiline.start_pattern must not match empty input")
+			}
+			if f.Multiline.MaxLines < 0 || f.Multiline.MaxLines > 4096 {
+				return fmt.Errorf("sources.filelog.multiline.max_lines must be between 1 and 4096")
+			}
+			flushAfter := f.Multiline.FlushAfter.Std()
+			if flushAfter != 0 &&
+				(flushAfter < 100*time.Millisecond || flushAfter > 24*time.Hour) {
+				return fmt.Errorf("sources.filelog.multiline.flush_after must be between 100ms and 24h")
 			}
 		}
 		maxLine := f.MaxLineBytes

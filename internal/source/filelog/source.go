@@ -52,6 +52,7 @@ type Config struct {
 	Format         string
 	Kubernetes     *KubernetesConfig
 	Redaction      *RedactionConfig
+	Multiline      *MultilineConfig
 	MaxLineBytes   int
 	MaxBatchBytes  int
 	MaxReadBytes   int64
@@ -67,12 +68,19 @@ type RedactionConfig struct {
 	Replacement string
 }
 
+type MultilineConfig struct {
+	StartPattern string
+	MaxLines     int
+	FlushAfter   time.Duration
+}
+
 type Source struct {
-	cfg      Config
-	logger   *slog.Logger
-	store    *checkpointStore
-	redactor *contentRedactor
-	emit     func(context.Context, signal.Envelope) error
+	cfg       Config
+	logger    *slog.Logger
+	store     *checkpointStore
+	redactor  *contentRedactor
+	multiline *multilineFramer
+	emit      func(context.Context, signal.Envelope) error
 
 	healthMu  sync.RWMutex
 	healthErr error
@@ -104,6 +112,13 @@ func New(cfg Config, logger *slog.Logger) (*Source, error) {
 	redactor, err := newContentRedactor(cfg.Redaction, cfg.MaxLineBytes)
 	if err != nil {
 		return nil, err
+	}
+	multiline, err := newMultilineFramer(cfg.Multiline)
+	if err != nil {
+		return nil, err
+	}
+	if multiline != nil && cfg.Format != "text" {
+		return nil, fmt.Errorf("filelog: multiline requires text format")
 	}
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("filelog: durable file identity requires Linux")
@@ -157,6 +172,7 @@ func New(cfg Config, logger *slog.Logger) (*Source, error) {
 	}
 	return &Source{
 		cfg: cfg, logger: logger, store: store, redactor: redactor,
+		multiline: multiline,
 	}, nil
 }
 
@@ -369,10 +385,33 @@ func findIdentity(dir, identity, currentPath string) string {
 
 func (s *Source) readFile(ctx context.Context, keyPath, readPath string, state checkpoint, flushPartial bool) (bool, error) {
 	if s.cfg.Format == "cri" {
+		if state.MultilineDropping {
+			state.MultilineDropping = false
+			s.store.files[keyPath] = state
+			if err := s.persistCheckpoint(); err != nil {
+				return false, err
+			}
+		}
 		return s.readCRIFile(ctx, keyPath, readPath, state, flushPartial)
 	}
 	if state.CRIDropping {
 		state.CRIDropping = false
+		s.store.files[keyPath] = state
+		if err := s.persistCheckpoint(); err != nil {
+			return false, err
+		}
+	}
+	if s.multiline != nil {
+		return s.readMultilineFile(
+			ctx,
+			keyPath,
+			readPath,
+			state,
+			flushPartial,
+		)
+	}
+	if state.MultilineDropping {
+		state.MultilineDropping = false
 		s.store.files[keyPath] = state
 		if err := s.persistCheckpoint(); err != nil {
 			return false, err
