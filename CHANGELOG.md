@@ -15,6 +15,9 @@ versioning without treating `v1.0.0` as a schedule target.
 - local filesystem capacity, availability, inode, read-only, and per-mount
   error gauges with escaped mountinfo parsing and deterministic overmount
   selection;
+- explicitly scoped cgroup v2 CPU usage/throttling, quota, memory/swap,
+  event, PID, and per-device I/O telemetry for the configured cgroupfs
+  root, including explicit unlimited-limit gauges;
 - per-collector duration/success gauges plus host collection, unsupported,
   failure, emitted-series, and pipeline-admission counters;
 - deterministic procfs fixtures covering alternate mounts, malformed data,
@@ -30,7 +33,8 @@ versioning without treating `v1.0.0` as a schedule target.
 - the default host collector set now also includes uptime, PSI, and UTS
   metadata, disk I/O, and local filesystems; missing optional support is
   classified separately from collection errors and repeated state logs are
-  suppressed;
+  suppressed; cgroup v2 is added without claiming that a container namespace
+  root represents the entire host;
 - remote, automounted, and FUSE filesystem `statfs` calls are excluded until a
   stuck-mount supervisor can bound blocking syscalls without accumulating
   abandoned workers.

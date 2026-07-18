@@ -175,6 +175,7 @@ func (s *Source) collectorRegistry() []collectorEntry {
 		{"network", s.network},
 		{"disk", s.disk},
 		{"filesystem", s.filesystem},
+		{"cgroup", s.cgroup},
 		{"uptime", s.uptime},
 		{"pressure", s.pressure},
 		{"uname", s.uname},

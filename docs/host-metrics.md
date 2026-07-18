@@ -11,7 +11,7 @@ healthy metrics from the same cycle.
 sources:
   host:
     interval: 15s
-    collectors: [cpu, load, memory, network, disk, filesystem, uptime, pressure, uname]
+    collectors: [cpu, load, memory, network, disk, filesystem, cgroup, uptime, pressure, uname]
     # For a containerized agent, point these at read-only host mounts.
     procfs_path: /host/proc
     sysfs_path: /host/sys
@@ -26,9 +26,9 @@ must be at least `100ms`. Filesystem roots must be clean absolute paths.
 The default roots are `/proc`, `/sys`, `/`, and `/sys/fs/cgroup`.
 `procfs_path` supplies kernel counters and mountinfo. `rootfs_path` supplies
 the paths used for local filesystem `statfs` calls. `sysfs_path` and
-`cgroupfs_path` are an explicit compatibility surface for the upcoming device
-metadata and cgroup increments, so deployments do not need a later
-configuration shape migration.
+`cgroupfs_path` is the exact cgroup v2 root observed by the cgroup collector.
+`sysfs_path` remains an explicit compatibility surface for upcoming device
+metadata, so deployments do not need a later configuration shape migration.
 
 Mount alternate roots read-only. Wisp does not write to procfs, sysfs, the
 host root, or cgroupfs. A typical container needs host PID visibility and
@@ -51,6 +51,11 @@ differ from the host UTS namespace if the container is isolated.
 | `disk` | optional discard and flush metrics | kernels exposing those diskstats fields; exact `bytes`, `ms`, or operation counts |
 | `filesystem` | `node_filesystem_size_bytes`, `node_filesystem_free_bytes`, `node_filesystem_avail_bytes` | integer gauges, `bytes`; `device`, `fstype`, `mountpoint` |
 | `filesystem` | `node_filesystem_files`, `node_filesystem_files_free`, `node_filesystem_readonly`, `node_filesystem_device_error` | integer gauges; `device`, `fstype`, `mountpoint` |
+| `cgroup` | `node_cgroup_v2_info` | constant gauge; `cgroup.scope=configured_root` |
+| `cgroup` | `node_cgroup_cpu_*` | exact cumulative CPU usage/throttling counters and quota/period/weight gauges, `us` where applicable |
+| `cgroup` | `node_cgroup_memory_*` | current/limit/swap byte gauges and event counters |
+| `cgroup` | `node_cgroup_pids_*` | current and limit gauges |
+| `cgroup` | `node_cgroup_io_*` | per-device byte and operation counters; `device`, `cgroup.scope` |
 | `uptime` | `node_uptime_seconds`, `node_boot_time_seconds` | gauges, `s` |
 | `pressure` | `node_pressure_<resource>_<scope>_microseconds_total` | monotonic sum, `us` |
 | `pressure` | `node_pressure_<resource>_<scope>_ratio` | gauge, unit `1`; `window=10s|60s|300s` |
@@ -82,6 +87,22 @@ enforce time bounds without leaking a goroutine every interval. Local
 types are collected. A failed local mount emits
 `node_filesystem_device_error=1` while healthy mounts remain available.
 
+The cgroup collector never guesses whether a cgroup namespace represents the
+whole machine. It observes exactly `cgroupfs_path` and labels every series
+`cgroup.scope=configured_root`. On a host install the default cgroup2 root is
+normally host-wide. Inside a container it is commonly a delegated container
+root unless the operator supplies a read-only host cgroup2 mount. The collector
+detects cgroup v2 through `cgroup.controllers`; cgroup v1 is reported as
+unsupported. It exports exact CPU usage/throttling, CPU quota and period,
+memory/swap current and limit, memory events, PID current and limit,
+and per-device I/O counters. Unlimited `max` values use explicit
+`*_unlimited=1` gauges instead of fabricated numeric limits.
+
+Wisp intentionally does not enumerate descendant workload cgroups yet. Doing
+that safely requires a cardinality budget, cgroup lifecycle handling, and
+container/workload resource attribution so a filesystem path is not exposed as
+an accidental identity.
+
 Every emitted series receives the configured agent resource attributes.
 Future host/container/workload resource detection will be additive and will
 have an explicit conflict policy; it is not inferred silently today.
@@ -101,7 +122,7 @@ have an explicit conflict policy; it is not inferred silently today.
   synthesize missed host samples.
 - Existing configurations remain compatible. Omitting all new fields retains
   the prior paths and interval behavior; the default collector set gains
-  `disk`, `filesystem`, `uptime`, `pressure`, and `uname`.
+  `disk`, `filesystem`, `cgroup`, `uptime`, `pressure`, and `uname`.
 
 Wisp exposes the following fixed-cardinality self-observability:
 

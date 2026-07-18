@@ -473,7 +473,7 @@ func (c *Config) Validate() error {
 			)
 		}
 		validCollectors := map[string]struct{}{
-			"cpu": {}, "disk": {}, "filesystem": {},
+			"cgroup": {}, "cpu": {}, "disk": {}, "filesystem": {},
 			"load": {}, "memory": {}, "network": {},
 			"pressure": {}, "uname": {}, "uptime": {},
 		}

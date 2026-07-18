@@ -61,9 +61,12 @@ second pipeline rewrite.
 - PSI, uptime, and UTS kernel metadata — implemented;
 - bounded disk I/O and local filesystem capacity, inode, read-only, and
   per-mount error telemetry — implemented;
+- explicitly scoped cgroup v2 CPU, memory, swap, PID, event, and I/O telemetry
+  for the configured cgroupfs root — implemented;
 - collector duration/success gauges and transition-aware failure reporting —
   implemented;
-- cgroup v2 and socket telemetry;
+- socket telemetry and bounded workload cgroup enumeration after resource
+  attribution;
 - host/container/workload resource detection;
 - collector-specific time bounds and deeper failure injection.
 
