@@ -26,6 +26,9 @@ versioning without treating `v1.0.0` as a schedule target.
 - opt-in Kubernetes resource enrichment from validated kubelet pod log paths,
   including namespace, pod, UID, container, and integer restart count without
   requiring Kubernetes API access.
+- bounded ordered file-log content redaction before OTLP encoding or durable
+  spool admission, covering text, assembled/partial CRI, and malformed CRI
+  records without regex backtracking.
 
 ### Changed
 
@@ -47,6 +50,9 @@ versioning without treating `v1.0.0` as a schedule target.
 - path-derived Kubernetes identity overrides conflicting global resource
   values for that file; enrichment misses preserve records and remain
   observable.
+- redaction replacements are literal and bounded by `max_line_bytes`; records
+  whose replacement expansion exceeds the bound are intentionally dropped
+  without falling back to secret-bearing content.
 
 ## v0.7.0 — 2026-07-17
 

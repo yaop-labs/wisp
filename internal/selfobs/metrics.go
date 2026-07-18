@@ -103,6 +103,14 @@ var (
 		"wisp_filelog_kubernetes_enrichment_misses_total",
 		"File log records durably admitted without path-derived Kubernetes attributes while enrichment was enabled.",
 	)
+	FileLogRedactionMatches = newCounter(
+		"wisp_filelog_redaction_matches_total",
+		"File log content regex matches replaced before durable admission, including retried reads.",
+	)
+	FileLogRedactionDropped = newCounter(
+		"wisp_filelog_redaction_dropped_records_total",
+		"File log records intentionally dropped because redaction expansion exceeded max_line_bytes.",
+	)
 )
 
 // gaugeFunc is a gauge whose current value is read from fn at scrape time.

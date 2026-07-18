@@ -51,6 +51,7 @@ type Config struct {
 	StartAt        string
 	Format         string
 	Kubernetes     *KubernetesConfig
+	Redaction      *RedactionConfig
 	MaxLineBytes   int
 	MaxBatchBytes  int
 	MaxReadBytes   int64
@@ -61,11 +62,17 @@ type KubernetesConfig struct {
 	PodLogsRoot string
 }
 
+type RedactionConfig struct {
+	Patterns    []string
+	Replacement string
+}
+
 type Source struct {
-	cfg    Config
-	logger *slog.Logger
-	store  *checkpointStore
-	emit   func(context.Context, signal.Envelope) error
+	cfg      Config
+	logger   *slog.Logger
+	store    *checkpointStore
+	redactor *contentRedactor
+	emit     func(context.Context, signal.Envelope) error
 
 	healthMu  sync.RWMutex
 	healthErr error
@@ -93,6 +100,10 @@ func New(cfg Config, logger *slog.Logger) (*Source, error) {
 	}
 	if cfg.MaxReadBytes <= 0 {
 		cfg.MaxReadBytes = defaultMaxReadBytes
+	}
+	redactor, err := newContentRedactor(cfg.Redaction, cfg.MaxLineBytes)
+	if err != nil {
+		return nil, err
 	}
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("filelog: durable file identity requires Linux")
@@ -144,7 +155,9 @@ func New(cfg Config, logger *slog.Logger) (*Source, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Source{cfg: cfg, logger: logger, store: store}, nil
+	return &Source{
+		cfg: cfg, logger: logger, store: store, redactor: redactor,
+	}, nil
 }
 
 func (s *Source) Format() string { return s.cfg.Format }
@@ -447,16 +460,29 @@ func (s *Source) readTextFile(ctx context.Context, keyPath, readPath string, sta
 				}
 			} else {
 				line = bytesTrimLineEnding(line)
-				record := newLogRecord(line, keyPath, lineStart)
-				recordBytes := proto.Size(record)
-				if batchBytes+recordBytes > s.cfg.MaxBatchBytes && len(records) > 0 {
+				redacted, keep := s.redactLogBody(line)
+				if !keep {
 					if err := flush(); err != nil {
 						return false, err
 					}
+					state.Offset = offset
+					state.Dropping = false
+					s.store.files[keyPath] = state
+					if err := s.persistCheckpoint(); err != nil {
+						return false, err
+					}
+				} else {
+					record := newLogRecord(redacted, keyPath, lineStart)
+					recordBytes := proto.Size(record)
+					if batchBytes+recordBytes > s.cfg.MaxBatchBytes && len(records) > 0 {
+						if err := flush(); err != nil {
+							return false, err
+						}
+					}
+					records = append(records, record)
+					batchBytes += recordBytes
+					batchEnd = offset
 				}
-				records = append(records, record)
-				batchBytes += recordBytes
-				batchEnd = offset
 			}
 			line = nil
 			oversized = false

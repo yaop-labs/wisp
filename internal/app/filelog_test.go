@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -12,8 +13,10 @@ import (
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/yaop-labs/wisp/internal/config"
+	"github.com/yaop-labs/wisp/internal/signal"
 )
 
 func TestAppRoutesFileLogsThroughSharedSpool(t *testing.T) {
@@ -33,7 +36,7 @@ func TestAppRoutesFileLogsThroughSharedSpool(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "app.log")
 	checkpointPath := filepath.Join(dir, "state", "filelog.json")
-	if err := os.WriteFile(logPath, []byte("from-file\n"), 0o600); err != nil {
+	if err := os.WriteFile(logPath, []byte("token=from-file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	yaml := fmt.Sprintf(`
@@ -43,6 +46,8 @@ sources:
     checkpoint_file: %q
     poll_interval: 1h
     start_at: beginning
+    redaction:
+      patterns: ['token=[^ ]+']
 exporter:
   otlp:
     endpoint: %q
@@ -76,8 +81,8 @@ resource:
 	select {
 	case request := <-collector.got:
 		record := request.ResourceLogs[0].ScopeLogs[0].LogRecords[0]
-		if got := record.Body.GetStringValue(); got != "from-file" {
-			t.Fatalf("collector body=%q, want from-file", got)
+		if got := record.Body.GetStringValue(); got != "[REDACTED]" {
+			t.Fatalf("collector body=%q, want redacted content", got)
 		}
 		if got := request.ResourceLogs[0].Resource.Attributes[0].Value.GetStringValue(); got != "checkout" {
 			t.Fatalf("collector resource service.name=%q", got)
@@ -99,6 +104,113 @@ resource:
 
 	cancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer shutdownCancel()
+	if err := application.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAppRedactsFileLogBeforeSpoolPersistence(t *testing.T) {
+	reservation, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unavailableEndpoint := reservation.Addr().String()
+	if err := reservation.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "app.log")
+	checkpointPath := filepath.Join(dir, "filelog.json")
+	spoolPath := filepath.Join(dir, "spool")
+	const secret = "never-write-this-secret"
+	if err := os.WriteFile(
+		logPath,
+		[]byte("token="+secret+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	yaml := fmt.Sprintf(`
+sources:
+  filelog:
+    include: [%q]
+    checkpoint_file: %q
+    poll_interval: 1h
+    start_at: beginning
+    redaction:
+      patterns: ['token=[^ ]+']
+exporter:
+  otlp:
+    endpoint: %q
+    protocol: grpc
+    timeout: 100ms
+    retry:
+      max_attempts: 1
+  spool:
+    dir: %q
+    max_bytes: 1048576
+resource:
+  attributes:
+    service.name: checkout
+`, logPath, checkpointPath, unavailableEndpoint, spoolPath)
+	cfg, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(cfg, discardLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := application.Start(runCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	var envelopePath string
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		matches, globErr := filepath.Glob(filepath.Join(spoolPath, "*.envelope"))
+		if globErr != nil {
+			t.Fatal(globErr)
+		}
+		if len(matches) == 1 {
+			envelopePath = matches[0]
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if envelopePath == "" {
+		t.Fatal("timed out waiting for redacted spool envelope")
+	}
+	data, err := os.ReadFile(envelopePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(secret)) {
+		t.Fatal("raw spool record contains unredacted secret")
+	}
+	envelope, err := signal.UnmarshalBinary(data, signal.DefaultMaxPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request collogspb.ExportLogsServiceRequest
+	if err := proto.Unmarshal(envelope.Payload, &request); err != nil {
+		t.Fatal(err)
+	}
+	body := request.ResourceLogs[0].ScopeLogs[0].LogRecords[0].
+		Body.GetStringValue()
+	if body != "[REDACTED]" {
+		t.Fatalf("spooled body=%q, want redacted content", body)
+	}
+
+	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(
+		context.Background(),
+		3*time.Second,
+	)
 	defer shutdownCancel()
 	if err := application.Shutdown(shutdownCtx); err != nil {
 		t.Fatal(err)

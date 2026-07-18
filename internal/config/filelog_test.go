@@ -17,6 +17,9 @@ sources:
     format: cri
     kubernetes:
       pod_logs_root: /host/var/log/pods
+    redaction:
+      patterns: ['(?i)bearer\s+[a-z0-9._-]+', 'token=[^ ]+']
+      replacement: '[MASKED]'
     max_line_bytes: 65536
     max_batch_bytes: 262144
     max_read_bytes_per_poll: 1048576
@@ -35,7 +38,10 @@ resource:
 		cfg.Sources.FileLog.StartAt != "beginning" ||
 		cfg.Sources.FileLog.Format != "cri" ||
 		cfg.Sources.FileLog.Kubernetes == nil ||
-		cfg.Sources.FileLog.Kubernetes.PodLogsRoot != "/host/var/log/pods" {
+		cfg.Sources.FileLog.Kubernetes.PodLogsRoot != "/host/var/log/pods" ||
+		cfg.Sources.FileLog.Redaction == nil ||
+		len(cfg.Sources.FileLog.Redaction.Patterns) != 2 ||
+		cfg.Sources.FileLog.Redaction.Replacement != "[MASKED]" {
 		t.Fatalf("filelog config=%+v", cfg.Sources.FileLog)
 	}
 }
@@ -75,6 +81,21 @@ func TestFileLogConfigRejectsUnsafeBounds(t *testing.T) {
 			name: "filesystem root is too broad",
 			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    format: cri\n    kubernetes:\n      pod_logs_root: /",
 			want: "absolute non-root",
+		},
+		{
+			name: "redaction requires rules",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    redaction: {}",
+			want: "patterns",
+		},
+		{
+			name: "invalid redaction regexp",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    redaction:\n      patterns: ['[']",
+			want: "patterns[0]",
+		},
+		{
+			name: "empty matching regexp",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    redaction:\n      patterns: ['a*']",
+			want: "empty input",
 		},
 		{
 			name: "batch below line",

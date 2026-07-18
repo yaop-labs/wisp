@@ -66,6 +66,11 @@ sources:
   #   max_line_bytes: 262144
   #   max_batch_bytes: 524288
   #   max_read_bytes_per_poll: 4194304
+  #   redaction:                       # applied before OTLP/spool durability
+  #     patterns:
+  #       - '(?i)authorization:\s*bearer\s+\S+'
+  #       - 'token=[^&\s]+'
+  #     replacement: '[REDACTED]'      # literal; this is the default
   #
   # Kubernetes CRI logs: use the real pod files for rotation recovery, not
   # the symlinks under /var/log/containers.

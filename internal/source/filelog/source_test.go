@@ -1,6 +1,7 @@
 package filelog
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -90,6 +91,22 @@ func newTestSourceWithFormat(
 		t.Fatal(err)
 	}
 	return source
+}
+
+func enableTestRedaction(
+	t *testing.T,
+	source *Source,
+	patterns []string,
+	replacement string,
+) {
+	t.Helper()
+	config := &RedactionConfig{Patterns: patterns, Replacement: replacement}
+	redactor, err := newContentRedactor(config, source.cfg.MaxLineBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.cfg.Redaction = config
+	source.redactor = redactor
 }
 
 func appendFile(t *testing.T, path, value string) {
@@ -355,6 +372,105 @@ func TestFileLogEmptyLinesStillRespectBatchBound(t *testing.T) {
 	}
 	if capture.calls < 2 {
 		t.Fatalf("batches=%d, empty records bypassed batch bound", capture.calls)
+	}
+}
+
+func TestFileLogRedactsTextBeforeDurableEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+	checkpoints := filepath.Join(dir, "filelog.json")
+	if err := os.WriteFile(
+		path,
+		[]byte("user=alice token=super-secret\nsafe\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestSource(t, path, checkpoints, "beginning")
+	enableTestRedaction(t, source, []string{`token=[^ ]+`}, "")
+	capture := &logCapture{}
+	source.SetLogsEmitter(capture.emit)
+	source.poll(context.Background())
+
+	want := []string{"user=alice [REDACTED]", "safe"}
+	if len(capture.bodies) != len(want) {
+		t.Fatalf("redacted bodies=%v, want %v", capture.bodies, want)
+	}
+	for index := range want {
+		if capture.bodies[index] != want[index] {
+			t.Fatalf("redacted bodies=%v, want %v", capture.bodies, want)
+		}
+	}
+	for _, envelope := range capture.envelopes {
+		if bytes.Contains(envelope.Payload, []byte("super-secret")) {
+			t.Fatal("durable envelope contains unredacted secret")
+		}
+	}
+}
+
+func TestFileLogRedactsAssembledAndMalformedCRI(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "0.log")
+	checkpoints := filepath.Join(dir, "filelog.json")
+	data := "2026-07-18T10:11:12Z stdout P api_key=sec\n" +
+		"2026-07-18T10:11:13Z stdout F ret\n" +
+		"malformed token=hidden\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestSourceWithFormat(t, path, checkpoints, "beginning", "cri")
+	enableTestRedaction(
+		t,
+		source,
+		[]string{`api_key=\w+`, `token=\w+`},
+		"",
+	)
+	capture := &logCapture{}
+	source.SetLogsEmitter(capture.emit)
+	source.poll(context.Background())
+
+	want := []string{"[REDACTED]", "malformed [REDACTED]"}
+	if len(capture.bodies) != len(want) {
+		t.Fatalf("redacted CRI bodies=%v, want %v", capture.bodies, want)
+	}
+	for index := range want {
+		if capture.bodies[index] != want[index] {
+			t.Fatalf("redacted CRI bodies=%v, want %v", capture.bodies, want)
+		}
+	}
+	if !attributeBool(capture.records[1], "wisp.cri.parse_error") {
+		t.Fatal("redaction removed malformed CRI diagnostic attribute")
+	}
+	for _, envelope := range capture.envelopes {
+		if bytes.Contains(envelope.Payload, []byte("secret")) ||
+			bytes.Contains(envelope.Payload, []byte("hidden")) {
+			t.Fatal("CRI durable envelope contains unredacted secret")
+		}
+	}
+}
+
+func TestFileLogRedactionExpansionDropsAndCheckpointsRecord(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+	checkpoints := filepath.Join(dir, "filelog.json")
+	if err := os.WriteFile(path, []byte("aaaa\nok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestSource(t, path, checkpoints, "beginning")
+	source.cfg.MaxLineBytes = 4
+	enableTestRedaction(t, source, []string{`a`}, "XX")
+	capture := &logCapture{}
+	source.SetLogsEmitter(capture.emit)
+	source.poll(context.Background())
+	if got := capture.bodies; len(got) != 1 || got[0] != "ok" {
+		t.Fatalf("post-expansion bodies=%v", got)
+	}
+
+	restarted := newTestSource(t, path, checkpoints, "beginning")
+	restarted.SetLogsEmitter(capture.emit)
+	restarted.poll(context.Background())
+	if len(capture.bodies) != 1 {
+		t.Fatalf("redaction-dropped record replayed after restart: %v", capture.bodies)
 	}
 }
 

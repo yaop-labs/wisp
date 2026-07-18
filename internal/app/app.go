@@ -147,6 +147,13 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 					PodLogsRoot: fc.Kubernetes.PodLogsRoot,
 				}
 			}
+			var redaction *filelogsrc.RedactionConfig
+			if fc.Redaction != nil {
+				redaction = &filelogsrc.RedactionConfig{
+					Patterns:    slices.Clone(fc.Redaction.Patterns),
+					Replacement: fc.Redaction.Replacement,
+				}
+			}
 			source, err := filelogsrc.New(filelogsrc.Config{
 				Include:        fc.Include,
 				Exclude:        fc.Exclude,
@@ -155,6 +162,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				StartAt:        fc.StartAt,
 				Format:         fc.Format,
 				Kubernetes:     kubernetes,
+				Redaction:      redaction,
 				MaxLineBytes:   maxLineBytes,
 				MaxBatchBytes:  maxBatchBytes,
 				MaxReadBytes:   fc.MaxReadBytes,
@@ -170,6 +178,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				"checkpoint_file", fc.CheckpointFile,
 				"format", source.Format(),
 				"kubernetes_enrichment", fc.Kubernetes != nil,
+				"redaction_rules", fileLogRedactionRuleCount(fc.Redaction),
 				"max_line_bytes", maxLineBytes,
 				"max_batch_bytes", maxBatchBytes)
 			return source, nil
@@ -472,6 +481,13 @@ func effectiveFileLogBounds(cfg *config.FileLogSource, requestLimit int) (int, i
 		maxLine = maxBatch
 	}
 	return maxLine, maxBatch
+}
+
+func fileLogRedactionRuleCount(redaction *config.FileLogRedaction) int {
+	if redaction == nil {
+		return 0
+	}
+	return len(redaction.Patterns)
 }
 
 type exporterWithSignalClose struct {

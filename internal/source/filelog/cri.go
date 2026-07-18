@@ -152,6 +152,17 @@ func (s *Source) readCRIFile(
 		s.store.files[keyPath] = state
 		return s.persistCheckpoint()
 	}
+	redactAndAdd := func(
+		body []byte,
+		commitEnd int64,
+		build func([]byte) *logspb.LogRecord,
+	) error {
+		redacted, keep := s.redactLogBody(body)
+		if !keep {
+			return persistBoundary(commitEnd, false)
+		}
+		return add(build(redacted), commitEnd)
+	}
 	addPending := func(partial bool, sequenceError bool) error {
 		if pending == nil {
 			return nil
@@ -163,17 +174,22 @@ func (s *Source) readCRIFile(
 		if sequenceError {
 			extra = append(extra, boolAttribute("wisp.cri.sequence_error", true))
 		}
-		record := newCRILogRecord(
-			pending.body,
-			keyPath,
-			pending.startOffset,
-			pending.timeUnixNano,
-			pending.stream,
-			extra...,
-		)
+		body := pending.body
+		startOffset := pending.startOffset
 		end := pending.endOffset
+		timeUnixNano := pending.timeUnixNano
+		stream := pending.stream
 		pending = nil
-		return add(record, end)
+		return redactAndAdd(body, end, func(redacted []byte) *logspb.LogRecord {
+			return newCRILogRecord(
+				redacted,
+				keyPath,
+				startOffset,
+				timeUnixNano,
+				stream,
+				extra...,
+			)
+		})
 	}
 
 	var processParsed func(criLine, int64, int64) error
@@ -196,13 +212,19 @@ func (s *Source) readCRIFile(
 				return persistBoundary(end, logicalDropping)
 			}
 			if parsed.tag == 'F' {
-				return add(newCRILogRecord(
+				return redactAndAdd(
 					parsed.content,
-					keyPath,
-					start,
-					parsed.timeUnixNano,
-					parsed.stream,
-				), end)
+					end,
+					func(redacted []byte) *logspb.LogRecord {
+						return newCRILogRecord(
+							redacted,
+							keyPath,
+							start,
+							parsed.timeUnixNano,
+							parsed.stream,
+						)
+					},
+				)
 			}
 			pending = &criPending{
 				body:         slices.Clone(parsed.content),
@@ -241,12 +263,18 @@ func (s *Source) readCRIFile(
 					return err
 				}
 			}
-			record := newLogRecord(value, keyPath, start)
-			record.Attributes = append(
-				record.Attributes,
-				boolAttribute("wisp.cri.parse_error", true),
+			return redactAndAdd(
+				value,
+				end,
+				func(redacted []byte) *logspb.LogRecord {
+					record := newLogRecord(redacted, keyPath, start)
+					record.Attributes = append(
+						record.Attributes,
+						boolAttribute("wisp.cri.parse_error", true),
+					)
+					return record
+				},
 			)
-			return add(record, end)
 		}
 		selfobs.FileLogCRIFragments.Inc()
 		return processParsed(parsed, start, end)

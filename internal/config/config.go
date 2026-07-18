@@ -9,7 +9,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/yaop-labs/reef/bearer"
 	"github.com/yaop-labs/reef/tlsconf"
@@ -130,6 +134,7 @@ type FileLogSource struct {
 	StartAt        string             `yaml:"start_at"`
 	Format         string             `yaml:"format"`
 	Kubernetes     *FileLogKubernetes `yaml:"kubernetes"`
+	Redaction      *FileLogRedaction  `yaml:"redaction"`
 	MaxLineBytes   int                `yaml:"max_line_bytes"`
 	MaxBatchBytes  int                `yaml:"max_batch_bytes"`
 	MaxReadBytes   int64              `yaml:"max_read_bytes_per_poll"`
@@ -138,6 +143,12 @@ type FileLogSource struct {
 // FileLogKubernetes enables resource enrichment from kubelet's pod log path.
 type FileLogKubernetes struct {
 	PodLogsRoot string `yaml:"pod_logs_root"`
+}
+
+// FileLogRedaction replaces regex matches before logs enter durable storage.
+type FileLogRedaction struct {
+	Patterns    []string `yaml:"patterns"`
+	Replacement string   `yaml:"replacement"`
 }
 
 // EBPFSource configures kernel-side probes (Linux-only, requires CAP_BPF).
@@ -335,6 +346,31 @@ func (c *Config) Validate() error {
 			root := f.Kubernetes.PodLogsRoot
 			if root != "" && (!filepath.IsAbs(root) || filepath.Clean(root) == string(filepath.Separator)) {
 				return fmt.Errorf("sources.filelog.kubernetes.pod_logs_root must be an absolute non-root path")
+			}
+		}
+		if f.Redaction != nil {
+			if len(f.Redaction.Patterns) == 0 || len(f.Redaction.Patterns) > 16 {
+				return fmt.Errorf("sources.filelog.redaction.patterns must contain between 1 and 16 rules")
+			}
+			for i, pattern := range f.Redaction.Patterns {
+				if pattern == "" || len(pattern) > 1024 {
+					return fmt.Errorf("sources.filelog.redaction.patterns[%d] must contain between 1 and 1024 bytes", i)
+				}
+				compiled, err := regexp.Compile(pattern)
+				if err != nil {
+					return fmt.Errorf("sources.filelog.redaction.patterns[%d] is not a valid regular expression", i)
+				}
+				if compiled.MatchString("") {
+					return fmt.Errorf("sources.filelog.redaction.patterns[%d] must not match empty input", i)
+				}
+			}
+			replacement := f.Redaction.Replacement
+			if replacement == "" {
+				replacement = "[REDACTED]"
+			}
+			if len(replacement) > 256 || !utf8.ValidString(replacement) ||
+				strings.IndexFunc(replacement, unicode.IsControl) >= 0 {
+				return fmt.Errorf("sources.filelog.redaction.replacement must be valid printable UTF-8 up to 256 bytes")
 			}
 		}
 		maxLine := f.MaxLineBytes

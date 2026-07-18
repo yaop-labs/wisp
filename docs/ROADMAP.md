@@ -36,8 +36,9 @@ second pipeline rewrite.
   implemented;
 - API-free Kubernetes pod/container resource enrichment from kubelet log paths
   — implemented;
+- bounded ordered content redaction before OTLP/spool durability — implemented;
 - journald collection;
-- multiline parsing, non-CRI timestamps, size bounds, and redaction;
+- multiline parsing, non-CRI timestamps, and size bounds;
 - optional API-backed Kubernetes workload, node, label, and image enrichment;
 - documented at-least-once behavior and duplicate boundary.
 

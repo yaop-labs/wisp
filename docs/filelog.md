@@ -43,6 +43,48 @@ Each record contains:
 In `text` mode the record observed time is the collection time and no event
 timestamp is inferred.
 
+## Content redaction before durability
+
+Redaction is opt-in and runs on the fully framed logical body before Wisp
+creates an OTLP request, calls the exporter, or writes an envelope to the
+spool:
+
+```yaml
+sources:
+  filelog:
+    # ...include, checkpoint, and bounds...
+    redaction:
+      patterns:
+        - '(?i)authorization:\s*bearer\s+\S+'
+        - 'token=[^&\s]+'
+      replacement: '[REDACTED]'
+```
+
+Rules use Go's RE2-compatible regular expressions and execute in configured
+order. The replacement is literal, not a `$1` expansion. An omitted or empty
+replacement defaults to `[REDACTED]`. Redaction applies equally to text
+records, assembled CRI `P…F` content, rotated CRI partials, and malformed CRI
+lines retained as raw records.
+
+The privacy boundary is deliberately bounded:
+
+- 1–16 patterns;
+- at most 1024 bytes per pattern;
+- at most 256 printable UTF-8 bytes in the replacement;
+- patterns matching empty input are rejected;
+- every intermediate result must remain within `max_line_bytes`.
+
+If replacement expansion would exceed `max_line_bytes`, Wisp never constructs
+or persists the expanded record. It intentionally drops that record, advances
+the checkpoint, and increments
+`wisp_filelog_redaction_dropped_records_total`. This is an explicit
+privacy-over-availability choice: the original secret-bearing content is not
+used as a fallback.
+
+`wisp_filelog_redaction_matches_total` counts replacements, including repeated
+work after an admission retry. Pattern text and replacement content are not
+written to normal Wisp logs.
+
 ## Kubernetes CRI framing
 
 Use the actual pod files rather than the convenience symlinks under
@@ -217,8 +259,10 @@ Self-observability includes:
 - `wisp_filelog_cri_sequence_errors_total`;
 - `wisp_filelog_cri_partial_records_total`;
 - `wisp_filelog_kubernetes_enriched_records_total`;
-- `wisp_filelog_kubernetes_enrichment_misses_total`.
+- `wisp_filelog_kubernetes_enrichment_misses_total`;
+- `wisp_filelog_redaction_matches_total`;
+- `wisp_filelog_redaction_dropped_records_total`.
 
 Multiline application parsing beyond CRI runtime fragments, content
-redaction, API-backed Kubernetes metadata enrichment, and journald collection
-remain separate increments.
+timestamps for non-CRI text, API-backed Kubernetes metadata enrichment, and
+journald collection remain separate increments.
