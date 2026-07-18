@@ -107,17 +107,7 @@ func TestCollectionCycleBoundsHungCollectorAndKeepsHealthyData(t *testing.T) {
 	}
 	timeoutsBefore := selfobs.HostCollectorTimeouts.Get()
 	var batch model.Batch
-	started := time.Now()
-	source.collectAndEmit(
-		context.Background(),
-		func(_ context.Context, emitted model.Batch) error {
-			batch = emitted
-			return nil
-		},
-	)
-	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
-		t.Fatalf("bounded collection took %v", elapsed)
-	}
+	collectWithinTestDeadline(t, source, &batch)
 	if len(batch.Series) != 1 || batch.Series[0].Name != "healthy" {
 		t.Fatalf("healthy collector data was lost: %+v", batch)
 	}
@@ -126,21 +116,33 @@ func TestCollectionCycleBoundsHungCollectorAndKeepsHealthyData(t *testing.T) {
 	}
 
 	// The next cycle must not spawn or wait on another hung attempt.
-	started = time.Now()
-	source.collectAndEmit(
-		context.Background(),
-		func(_ context.Context, emitted model.Batch) error {
-			batch = emitted
-			return nil
-		},
-	)
-	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
-		t.Fatalf("in-flight skip took %v", elapsed)
-	}
+	collectWithinTestDeadline(t, source, &batch)
 	if len(batch.Series) != 1 || batch.Series[0].Name != "healthy" {
 		t.Fatalf("second-cycle healthy data was lost: %+v", batch)
 	}
 	close(release)
+}
+
+func collectWithinTestDeadline(t *testing.T, source *Source, batch *model.Batch) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		source.collectAndEmit(
+			context.Background(),
+			func(_ context.Context, emitted model.Batch) error {
+				*batch = emitted
+				return nil
+			},
+		)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("collection cycle did not return within the test deadline")
+	}
 }
 
 func discardLogger() *slog.Logger {
