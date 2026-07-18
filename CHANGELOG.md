@@ -20,6 +20,9 @@ versioning without treating `v1.0.0` as a schedule target.
   whole-request envelopes, stable delivery IDs, and partial-success counters.
 - bounded Linux file log tailing with device/inode identity, atomic versioned
   checkpoints, restart/rotation recovery, and explicit oversized-line policy.
+- Kubernetes CRI log framing with event timestamps, stdout/stderr metadata,
+  bounded `P…F` assembly, malformed-input preservation, and restart-safe
+  oversized-sequence handling.
 
 ### Changed
 
@@ -36,6 +39,8 @@ versioning without treating `v1.0.0` as a schedule target.
 - file checkpoints advance only after downstream delivery or spool fsync, so
   admission failures retry without data loss and crashes have an explicit
   at-least-once duplicate boundary.
+- filelog checkpoint v1 remains readable and is upgraded to v2 on write; v2
+  records bounded CRI oversized-sequence continuation state.
 
 ## v0.7.0 — 2026-07-17
 

@@ -35,6 +35,7 @@ const (
 	defaultMaxLineBytes  = 256 << 10
 	defaultMaxBatchBytes = 512 << 10
 	defaultMaxReadBytes  = 4 << 20
+	defaultFormat        = "text"
 	readBufferBytes      = 64 << 10
 	maxDirectoryEntries  = 4096
 )
@@ -47,6 +48,7 @@ type Config struct {
 	CheckpointFile string
 	PollInterval   time.Duration
 	StartAt        string
+	Format         string
 	MaxLineBytes   int
 	MaxBatchBytes  int
 	MaxReadBytes   int64
@@ -74,6 +76,9 @@ func New(cfg Config, logger *slog.Logger) (*Source, error) {
 	if cfg.StartAt == "" {
 		cfg.StartAt = "end"
 	}
+	if cfg.Format == "" {
+		cfg.Format = defaultFormat
+	}
 	if cfg.MaxLineBytes <= 0 {
 		cfg.MaxLineBytes = defaultMaxLineBytes
 	}
@@ -91,6 +96,9 @@ func New(cfg Config, logger *slog.Logger) (*Source, error) {
 	}
 	if cfg.StartAt != "beginning" && cfg.StartAt != "end" {
 		return nil, fmt.Errorf("filelog: start_at must be beginning or end")
+	}
+	if cfg.Format != "text" && cfg.Format != "cri" {
+		return nil, fmt.Errorf("filelog: format must be text or cri")
 	}
 	if cfg.MaxLineBytes < 1 || cfg.MaxBatchBytes < cfg.MaxLineBytes ||
 		cfg.MaxReadBytes < int64(cfg.MaxBatchBytes) {
@@ -116,6 +124,8 @@ func New(cfg Config, logger *slog.Logger) (*Source, error) {
 	}
 	return &Source{cfg: cfg, logger: logger, store: store}, nil
 }
+
+func (s *Source) Format() string { return s.cfg.Format }
 
 func absolutePatterns(patterns []string) ([]string, error) {
 	out := make([]string, 0, len(patterns))
@@ -290,7 +300,7 @@ func (s *Source) tailPath(ctx context.Context, path string) error {
 	}
 	if info.Size() < state.Offset {
 		selfobs.FileLogTruncations.Inc()
-		state.Offset = 0
+		state = checkpoint{Identity: currentIdentity}
 		s.store.files[path] = state
 		if err := s.persistCheckpoint(); err != nil {
 			return err
@@ -323,6 +333,20 @@ func findIdentity(dir, identity, currentPath string) string {
 }
 
 func (s *Source) readFile(ctx context.Context, keyPath, readPath string, state checkpoint, flushPartial bool) (bool, error) {
+	if s.cfg.Format == "cri" {
+		return s.readCRIFile(ctx, keyPath, readPath, state, flushPartial)
+	}
+	if state.CRIDropping {
+		state.CRIDropping = false
+		s.store.files[keyPath] = state
+		if err := s.persistCheckpoint(); err != nil {
+			return false, err
+		}
+	}
+	return s.readTextFile(ctx, keyPath, readPath, state, flushPartial)
+}
+
+func (s *Source) readTextFile(ctx context.Context, keyPath, readPath string, state checkpoint, flushPartial bool) (bool, error) {
 	file, err := os.Open(readPath)
 	if err != nil {
 		return false, err
@@ -424,6 +448,15 @@ func (s *Source) readFile(ctx context.Context, keyPath, readPath string, state c
 		case errors.Is(readErr, io.EOF):
 			if err := flush(); err != nil {
 				return false, err
+			}
+			if oversized {
+				state.Offset = offset
+				state.Dropping = true
+				s.store.files[keyPath] = state
+				if err := s.persistCheckpoint(); err != nil {
+					return false, err
+				}
+				return false, nil
 			}
 			return len(line) == 0, nil
 		default:

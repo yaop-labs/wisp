@@ -128,6 +128,7 @@ type FileLogSource struct {
 	CheckpointFile string   `yaml:"checkpoint_file"`
 	PollInterval   Duration `yaml:"poll_interval"`
 	StartAt        string   `yaml:"start_at"`
+	Format         string   `yaml:"format"`
 	MaxLineBytes   int      `yaml:"max_line_bytes"`
 	MaxBatchBytes  int      `yaml:"max_batch_bytes"`
 	MaxReadBytes   int64    `yaml:"max_read_bytes_per_poll"`
@@ -317,6 +318,9 @@ func (c *Config) Validate() error {
 		}
 		if f.StartAt != "" && f.StartAt != "beginning" && f.StartAt != "end" {
 			return fmt.Errorf("sources.filelog.start_at must be beginning or end")
+		}
+		if f.Format != "" && f.Format != "text" && f.Format != "cri" {
+			return fmt.Errorf("sources.filelog.format must be text or cri")
 		}
 		maxLine := f.MaxLineBytes
 		if maxLine == 0 {

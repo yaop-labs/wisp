@@ -14,6 +14,7 @@ sources:
     checkpoint_file: "/var/lib/wisp/filelog.json"
     poll_interval: 500ms
     start_at: beginning
+    format: cri
     max_line_bytes: 65536
     max_batch_bytes: 262144
     max_read_bytes_per_poll: 1048576
@@ -29,7 +30,8 @@ resource:
 	}
 	if cfg.Sources.FileLog == nil ||
 		cfg.Sources.FileLog.CheckpointFile != "/var/lib/wisp/filelog.json" ||
-		cfg.Sources.FileLog.StartAt != "beginning" {
+		cfg.Sources.FileLog.StartAt != "beginning" ||
+		cfg.Sources.FileLog.Format != "cri" {
 		t.Fatalf("filelog config=%+v", cfg.Sources.FileLog)
 	}
 }
@@ -49,6 +51,11 @@ func TestFileLogConfigRejectsUnsafeBounds(t *testing.T) {
 			name: "bad start",
 			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    start_at: middle",
 			want: "start_at",
+		},
+		{
+			name: "bad format",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    format: docker-json",
+			want: "format",
 		},
 		{
 			name: "batch below line",

@@ -32,7 +32,9 @@ second pipeline rewrite.
 - bounded newline-delimited file tailing — implemented;
 - durable Linux file identity and atomic checkpoints across
   rotate/truncate/restart — implemented;
-- journald and Kubernetes CRI logs;
+- Kubernetes CRI framing, timestamps, streams, and bounded partial assembly —
+  implemented;
+- journald collection;
 - multiline parsing, timestamps, size bounds, redaction, and enrichment;
 - documented at-least-once behavior and duplicate boundary.
 

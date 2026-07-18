@@ -7,21 +7,24 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/yaop-labs/wisp/internal/signal"
 )
 
 type logCapture struct {
-	bodies []string
-	paths  []string
-	err    error
-	calls  int
-	failAt int
+	bodies  []string
+	paths   []string
+	err     error
+	calls   int
+	failAt  int
+	records []*logspb.LogRecord
 }
 
 func (c *logCapture) emit(_ context.Context, envelope signal.Envelope) error {
@@ -39,6 +42,7 @@ func (c *logCapture) emit(_ context.Context, envelope signal.Envelope) error {
 	for _, resource := range request.ResourceLogs {
 		for _, scope := range resource.ScopeLogs {
 			for _, record := range scope.LogRecords {
+				c.records = append(c.records, proto.Clone(record).(*logspb.LogRecord))
 				c.bodies = append(c.bodies, record.Body.GetStringValue())
 				for _, attribute := range record.Attributes {
 					if attribute.Key == "log.file.path" {
@@ -52,12 +56,23 @@ func (c *logCapture) emit(_ context.Context, envelope signal.Envelope) error {
 }
 
 func newTestSource(t *testing.T, path, checkpointPath, startAt string) *Source {
+	return newTestSourceWithFormat(t, path, checkpointPath, startAt, "text")
+}
+
+func newTestSourceWithFormat(
+	t *testing.T,
+	path string,
+	checkpointPath string,
+	startAt string,
+	format string,
+) *Source {
 	t.Helper()
 	source, err := New(Config{
 		Include:        []string{path},
 		CheckpointFile: checkpointPath,
 		PollInterval:   time.Hour,
 		StartAt:        startAt,
+		Format:         format,
 		MaxLineBytes:   64,
 		MaxBatchBytes:  128,
 		MaxReadBytes:   1024,
@@ -335,6 +350,282 @@ func TestFileLogEmptyLinesStillRespectBatchBound(t *testing.T) {
 	}
 }
 
+func TestFileLogCRIMapsTimestampStreamAndFragments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "0.log")
+	checkpoints := filepath.Join(dir, "filelog.json")
+	const first = "2026-07-18T10:11:12.123456789Z"
+	data := first + " stdout P hel" + "\n" +
+		"2026-07-18T10:11:12.223456789Z stdout F lo" + "\n" +
+		"2026-07-18T10:11:13Z stderr F failed" + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestSourceWithFormat(t, path, checkpoints, "beginning", "cri")
+	capture := &logCapture{}
+	source.SetLogsEmitter(capture.emit)
+	source.poll(context.Background())
+
+	if got := capture.bodies; len(got) != 2 ||
+		got[0] != "hello" || got[1] != "failed" {
+		t.Fatalf("CRI bodies=%v", got)
+	}
+	wantTime, err := time.Parse(time.RFC3339Nano, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := capture.records[0].TimeUnixNano; got != uint64(wantTime.UnixNano()) {
+		t.Fatalf("CRI time=%d, want %d", got, wantTime.UnixNano())
+	}
+	if capture.records[0].ObservedTimeUnixNano == 0 {
+		t.Fatal("CRI observed time is zero")
+	}
+	if got := attributeString(capture.records[0], "log.iostream"); got != "stdout" {
+		t.Fatalf("CRI stream=%q, want stdout", got)
+	}
+	if got := attributeInt(capture.records[0], "wisp.file.offset"); got != 0 {
+		t.Fatalf("CRI offset=%d, want first fragment offset 0", got)
+	}
+}
+
+func TestFileLogCRIRestartBeforeFinalFragmentReplaysPendingSequence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "0.log")
+	checkpoints := filepath.Join(dir, "filelog.json")
+	const partial = "2026-07-18T10:11:12Z stdout P before-"
+	if err := os.WriteFile(path, []byte(partial+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := newTestSourceWithFormat(t, path, checkpoints, "beginning", "cri")
+	capture := &logCapture{}
+	first.SetLogsEmitter(capture.emit)
+	first.poll(context.Background())
+	if len(capture.bodies) != 0 {
+		t.Fatalf("pending CRI fragment emitted: %v", capture.bodies)
+	}
+	store, err := loadCheckpointStore(checkpoints)
+	if err != nil {
+		t.Fatal(err)
+	}
+	absolute, _ := filepath.Abs(path)
+	if got := store.files[absolute].Offset; got != 0 {
+		t.Fatalf("pending CRI checkpoint=%d, want 0", got)
+	}
+
+	appendFile(t, path, "2026-07-18T10:11:13Z stdout F after\n")
+	restarted := newTestSourceWithFormat(t, path, checkpoints, "beginning", "cri")
+	restarted.SetLogsEmitter(capture.emit)
+	restarted.poll(context.Background())
+	if got := capture.bodies; len(got) != 1 || got[0] != "before-after" {
+		t.Fatalf("reassembled CRI bodies=%v", got)
+	}
+}
+
+func TestFileLogCRIAdmissionFailureDoesNotCommitFragments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "0.log")
+	checkpoints := filepath.Join(dir, "filelog.json")
+	data := "2026-07-18T10:11:12Z stdout P retry-\n" +
+		"2026-07-18T10:11:13Z stdout F me\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestSourceWithFormat(t, path, checkpoints, "beginning", "cri")
+	capture := &logCapture{err: errors.New("spool unavailable")}
+	source.SetLogsEmitter(capture.emit)
+	source.poll(context.Background())
+
+	store, err := loadCheckpointStore(checkpoints)
+	if err != nil {
+		t.Fatal(err)
+	}
+	absolute, _ := filepath.Abs(path)
+	if got := store.files[absolute].Offset; got != 0 {
+		t.Fatalf("failed CRI admission checkpoint=%d, want 0", got)
+	}
+	capture.err = nil
+	source.poll(context.Background())
+	if got := capture.bodies; len(got) != 1 || got[0] != "retry-me" {
+		t.Fatalf("retried CRI bodies=%v", got)
+	}
+}
+
+func TestFileLogCRIOversizedSequenceContinuesAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "0.log")
+	checkpoints := filepath.Join(dir, "filelog.json")
+	data := "2026-07-18T10:11:12Z stdout P abc\n" +
+		"2026-07-18T10:11:13Z stdout P de\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestSourceWithFormat(t, path, checkpoints, "beginning", "cri")
+	source.cfg.MaxLineBytes = 4
+	capture := &logCapture{}
+	source.SetLogsEmitter(capture.emit)
+	source.poll(context.Background())
+
+	store, err := loadCheckpointStore(checkpoints)
+	if err != nil {
+		t.Fatal(err)
+	}
+	absolute, _ := filepath.Abs(path)
+	state := store.files[absolute]
+	if state.Offset != int64(len(data)) || !state.CRIDropping {
+		t.Fatalf("oversized CRI checkpoint=%+v, want end+drop state", state)
+	}
+
+	appendFile(t, path,
+		"2026-07-18T10:11:14Z stdout F ignored\n"+
+			"2026-07-18T10:11:15Z stdout F ok\n")
+	restarted := newTestSourceWithFormat(t, path, checkpoints, "beginning", "cri")
+	restarted.cfg.MaxLineBytes = 4
+	restarted.SetLogsEmitter(capture.emit)
+	restarted.poll(context.Background())
+	if got := capture.bodies; len(got) != 1 || got[0] != "ok" {
+		t.Fatalf("post-oversize CRI bodies=%v", got)
+	}
+	store, err = loadCheckpointStore(checkpoints)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.files[absolute].CRIDropping {
+		t.Fatal("CRI drop state not cleared by final fragment")
+	}
+}
+
+func TestFileLogCRIPreservesMalformedLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "0.log")
+	checkpoints := filepath.Join(dir, "filelog.json")
+	if err := os.WriteFile(path, []byte("not a CRI record\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestSourceWithFormat(t, path, checkpoints, "beginning", "cri")
+	capture := &logCapture{}
+	source.SetLogsEmitter(capture.emit)
+	source.poll(context.Background())
+
+	if got := capture.bodies; len(got) != 1 || got[0] != "not a CRI record" {
+		t.Fatalf("malformed CRI bodies=%v", got)
+	}
+	if !attributeBool(capture.records[0], "wisp.cri.parse_error") {
+		t.Fatal("malformed CRI record lacks parse_error attribute")
+	}
+}
+
+func TestFileLogCRIFlushesPendingSequenceOnRotation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "0.log")
+	rotated := filepath.Join(dir, "0.log.1")
+	checkpoints := filepath.Join(dir, "filelog.json")
+	if err := os.WriteFile(
+		path,
+		[]byte("2026-07-18T10:11:12Z stdout P orphan\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestSourceWithFormat(t, path, checkpoints, "beginning", "cri")
+	capture := &logCapture{}
+	source.SetLogsEmitter(capture.emit)
+	source.poll(context.Background())
+	if err := os.Rename(path, rotated); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		path,
+		[]byte("2026-07-18T10:11:13Z stdout F new\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	source.poll(context.Background())
+	if got := capture.bodies; len(got) != 2 ||
+		got[0] != "orphan" || got[1] != "new" {
+		t.Fatalf("rotated CRI bodies=%v", got)
+	}
+	if !attributeBool(capture.records[0], "wisp.cri.partial") {
+		t.Fatal("rotated incomplete CRI record lacks partial attribute")
+	}
+}
+
+func TestFileLogCRIStreamMismatchPreservesBothRecords(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "0.log")
+	checkpoints := filepath.Join(dir, "filelog.json")
+	data := "2026-07-18T10:11:12Z stdout P first\n" +
+		"2026-07-18T10:11:13Z stderr F second\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestSourceWithFormat(t, path, checkpoints, "beginning", "cri")
+	capture := &logCapture{}
+	source.SetLogsEmitter(capture.emit)
+	source.poll(context.Background())
+
+	if got := capture.bodies; len(got) != 2 ||
+		got[0] != "first" || got[1] != "second" {
+		t.Fatalf("stream mismatch bodies=%v", got)
+	}
+	if !attributeBool(capture.records[0], "wisp.cri.sequence_error") ||
+		!attributeBool(capture.records[0], "wisp.cri.partial") {
+		t.Fatal("interrupted CRI sequence lacks diagnostic attributes")
+	}
+}
+
+func TestFileLogCRIFragmentSpanBoundMakesProgress(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "0.log")
+	checkpoints := filepath.Join(dir, "filelog.json")
+	prefix := "2026-07-18T10:11:12Z stdout P "
+	data := prefix + "a\n" + prefix + "b\n" +
+		"2026-07-18T10:11:13Z stdout F ignored\n" +
+		"2026-07-18T10:11:14Z stdout F ok\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestSourceWithFormat(t, path, checkpoints, "beginning", "cri")
+	source.cfg.MaxReadBytes = 64
+	capture := &logCapture{}
+	source.SetLogsEmitter(capture.emit)
+	source.poll(context.Background())
+	if len(capture.bodies) != 0 {
+		t.Fatalf("over-budget fragment sequence emitted: %v", capture.bodies)
+	}
+	source.poll(context.Background())
+	if got := capture.bodies; len(got) != 1 || got[0] != "ok" {
+		t.Fatalf("post-budget CRI bodies=%v", got)
+	}
+}
+
+func attributeString(record *logspb.LogRecord, key string) string {
+	for _, attribute := range record.Attributes {
+		if attribute.Key == key {
+			return attribute.Value.GetStringValue()
+		}
+	}
+	return ""
+}
+
+func attributeInt(record *logspb.LogRecord, key string) int64 {
+	for _, attribute := range record.Attributes {
+		if attribute.Key == key {
+			return attribute.Value.GetIntValue()
+		}
+	}
+	return 0
+}
+
+func attributeBool(record *logspb.LogRecord, key string) bool {
+	for _, attribute := range record.Attributes {
+		if attribute.Key == key {
+			return attribute.Value.GetBoolValue()
+		}
+	}
+	return false
+}
+
 func TestCheckpointRejectsUnknownFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "checkpoint.json")
 	if err := os.WriteFile(path, []byte(`{"version":1,"files":{},"future":true}`), 0o600); err != nil {
@@ -342,5 +633,26 @@ func TestCheckpointRejectsUnknownFields(t *testing.T) {
 	}
 	if _, err := loadCheckpointStore(path); err == nil {
 		t.Fatal("unknown checkpoint field accepted")
+	}
+}
+
+func TestCheckpointVersionOneLoadsAndUpgrades(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "checkpoint.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"files":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := loadCheckpointStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.save(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"version":2`) {
+		t.Fatalf("checkpoint was not upgraded: %s", data)
 	}
 }

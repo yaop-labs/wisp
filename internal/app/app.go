@@ -147,6 +147,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				CheckpointFile: fc.CheckpointFile,
 				PollInterval:   fc.PollInterval.Std(),
 				StartAt:        fc.StartAt,
+				Format:         fc.Format,
 				MaxLineBytes:   maxLineBytes,
 				MaxBatchBytes:  maxBatchBytes,
 				MaxReadBytes:   fc.MaxReadBytes,
@@ -160,6 +161,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				"include_patterns", len(fc.Include),
 				"exclude_patterns", len(fc.Exclude),
 				"checkpoint_file", fc.CheckpointFile,
+				"format", source.Format(),
 				"max_line_bytes", maxLineBytes,
 				"max_batch_bytes", maxBatchBytes)
 			return source, nil

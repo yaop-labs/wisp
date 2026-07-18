@@ -62,9 +62,18 @@ sources:
   #   checkpoint_file: "/var/lib/wisp/filelog-checkpoints.json"
   #   poll_interval: 1s
   #   start_at: end                    # beginning | end for first discovery
+  #   format: text                     # text (default) | cri
   #   max_line_bytes: 262144
   #   max_batch_bytes: 524288
   #   max_read_bytes_per_poll: 4194304
+  #
+  # Kubernetes CRI logs: use the real pod files for rotation recovery, not
+  # the symlinks under /var/log/containers.
+  # filelog:
+  #   include: ["/var/log/pods/*/*/*.log"]
+  #   exclude: ["/var/log/pods/*/*/*.gz"]
+  #   checkpoint_file: "/var/lib/wisp/filelog-checkpoints.json"
+  #   format: cri
 
   # Kernel-side RED/L7 metrics without instrumenting the app. Linux-only, CAP_BPF.
   # ebpf:

@@ -74,17 +74,27 @@ var (
 		"wisp_otlp_trace_spans_rejected_total",
 		"Trace spans rejected in an OTLP downstream partial-success response.",
 	)
-	FileLogRecords          = newCounter("wisp_filelog_records_total", "File log records durably admitted.")
-	FileLogBatches          = newCounter("wisp_filelog_batches_total", "File log batches durably admitted.")
-	FileLogBytesRead        = newCounter("wisp_filelog_bytes_read_total", "Bytes read while tailing configured files, including retried bytes.")
-	FileLogOversized        = newCounter("wisp_filelog_oversized_records_total", "File log records dropped because they exceeded max_line_bytes.")
-	FileLogRotations        = newCounter("wisp_filelog_rotations_total", "File identity changes handled as rotations.")
-	FileLogRotationMisses   = newCounter("wisp_filelog_rotation_misses_total", "Rotated file identities no longer present when Wisp attempted to drain them.")
-	FileLogTruncations      = newCounter("wisp_filelog_truncations_total", "Same-identity file truncations detected by size regression.")
-	FileLogCheckpointErrors = newCounter("wisp_filelog_checkpoint_errors_total", "Atomic file log checkpoint writes that failed.")
-	FileLogReadErrors       = newCounter("wisp_filelog_read_errors_total", "File log discovery or tail operations that failed.")
-	FileLogAdmissionErrors  = newCounter("wisp_filelog_admission_errors_total", "File log batches that downstream delivery or spool admission did not durably accept.")
-	FileLogBackpressure     = newCounter("wisp_filelog_backpressure_total", "File log batches paused by logs spool pressure.")
+	FileLogRecords           = newCounter("wisp_filelog_records_total", "File log records durably admitted.")
+	FileLogBatches           = newCounter("wisp_filelog_batches_total", "File log batches durably admitted.")
+	FileLogBytesRead         = newCounter("wisp_filelog_bytes_read_total", "Bytes read while tailing configured files, including retried bytes.")
+	FileLogOversized         = newCounter("wisp_filelog_oversized_records_total", "File log records dropped because they exceeded max_line_bytes.")
+	FileLogRotations         = newCounter("wisp_filelog_rotations_total", "File identity changes handled as rotations.")
+	FileLogRotationMisses    = newCounter("wisp_filelog_rotation_misses_total", "Rotated file identities no longer present when Wisp attempted to drain them.")
+	FileLogTruncations       = newCounter("wisp_filelog_truncations_total", "Same-identity file truncations detected by size regression.")
+	FileLogCheckpointErrors  = newCounter("wisp_filelog_checkpoint_errors_total", "Atomic file log checkpoint writes that failed.")
+	FileLogReadErrors        = newCounter("wisp_filelog_read_errors_total", "File log discovery or tail operations that failed.")
+	FileLogAdmissionErrors   = newCounter("wisp_filelog_admission_errors_total", "File log batches that downstream delivery or spool admission did not durably accept.")
+	FileLogBackpressure      = newCounter("wisp_filelog_backpressure_total", "File log batches paused by logs spool pressure.")
+	FileLogCRIFragments      = newCounter("wisp_filelog_cri_fragments_total", "Valid CRI physical fragments parsed.")
+	FileLogCRIParseErrors    = newCounter("wisp_filelog_cri_parse_errors_total", "Malformed CRI physical lines preserved as raw log records.")
+	FileLogCRISequenceErrors = newCounter(
+		"wisp_filelog_cri_sequence_errors_total",
+		"CRI fragment sequences terminated because framing or stream continuity was invalid.",
+	)
+	FileLogCRIPartialRecords = newCounter(
+		"wisp_filelog_cri_partial_records_total",
+		"Unterminated CRI fragment sequences flushed while draining a rotated file.",
+	)
 )
 
 // gaugeFunc is a gauge whose current value is read from fn at scrape time.

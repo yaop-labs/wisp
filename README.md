@@ -10,16 +10,17 @@ and Traces passthrough:
 - Prometheus/OpenMetrics scraping with static, file, DNS, and Kubernetes
   discovery;
 - OTLP metrics, logs, and traces receive/export over gRPC and HTTP/protobuf;
-- bounded newline-delimited file tailing with crash-safe checkpoints and
-  rotate/truncate detection;
+- bounded text and Kubernetes CRI file tailing with crash-safe checkpoints,
+  CRI timestamp/fragment assembly, and rotate/truncate detection;
 - Linux host metrics from `/proc`;
 - relabel, counter-reset, and cardinality processors;
 - OTLP gRPC/HTTP export with retry, bounded crash-safe spool, and backpressure;
 - Reef TLS, mTLS, and bearer authentication on ingress and egress;
 - Gyre lifecycle, readiness, status, and generation-aware reload.
 
-Journald/CRI and multiline log parsing, trace-aware batching/sampling, and the
-actual eBPF backend are planned, not silently simulated.
+Journald and application-level multiline log parsing, trace-aware
+batching/sampling, and the actual eBPF backend are planned, not silently
+simulated.
 See [the roadmap](docs/ROADMAP.md) and
 [the signal extensibility ADR](docs/adr/0001-signal-extensible-core.md).
 
