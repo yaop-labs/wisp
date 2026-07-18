@@ -173,6 +173,8 @@ func (s *Source) collectorRegistry() []collectorEntry {
 		{"memory", s.memory},
 		{"cpu", s.cpu},
 		{"network", s.network},
+		{"disk", s.disk},
+		{"filesystem", s.filesystem},
 		{"uptime", s.uptime},
 		{"pressure", s.pressure},
 		{"uname", s.uname},
@@ -292,6 +294,13 @@ func gauge(name, unit string, ts uint64, v float64, attrs model.Labels) model.Se
 	return model.Series{
 		Name: name, Unit: unit, Type: model.MetricGauge, Attrs: attrs,
 		Points: []model.Point{{TimeUnixNano: ts, FloatValue: v, IsFloat: true}},
+	}
+}
+
+func gaugeInt(name, unit string, ts uint64, v int64, attrs model.Labels) model.Series {
+	return model.Series{
+		Name: name, Unit: unit, Type: model.MetricGauge, Attrs: attrs,
+		Points: []model.Point{{TimeUnixNano: ts, IntValue: v}},
 	}
 }
 

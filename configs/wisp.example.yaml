@@ -11,7 +11,7 @@ sources:
   # Bounded Linux host metrics. Empty collectors means all available.
   host:
     interval: 15s
-    collectors: [cpu, memory, network, load, uptime, pressure, uname]
+    collectors: [cpu, memory, network, load, disk, filesystem, uptime, pressure, uname]
     # For a containerized agent, use read-only host mounts:
     # procfs_path: /host/proc
     # sysfs_path: /host/sys

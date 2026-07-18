@@ -10,6 +10,11 @@ versioning without treating `v1.0.0` as a schedule target.
 - configurable read-only procfs, sysfs, rootfs, and cgroupfs roots for
   containerized host collection without a later configuration-shape migration;
 - bounded Linux uptime, boot-time, PSI, and UTS metadata collectors;
+- bounded exact Linux disk I/O counters across base, discard, and flush
+  diskstats layouts;
+- local filesystem capacity, availability, inode, read-only, and per-mount
+  error gauges with escaped mountinfo parsing and deterministic overmount
+  selection;
 - per-collector duration/success gauges plus host collection, unsupported,
   failure, emitted-series, and pipeline-admission counters;
 - deterministic procfs fixtures covering alternate mounts, malformed data,
@@ -23,8 +28,12 @@ versioning without treating `v1.0.0` as a schedule target.
   kernel data while allowing healthy collectors and partial valid series to
   continue;
 - the default host collector set now also includes uptime, PSI, and UTS
-  metadata; missing PSI support is classified separately from collection
-  errors and repeated state logs are suppressed.
+  metadata, disk I/O, and local filesystems; missing optional support is
+  classified separately from collection errors and repeated state logs are
+  suppressed;
+- remote, automounted, and FUSE filesystem `statfs` calls are excluded until a
+  stuck-mount supervisor can bound blocking syscalls without accumulating
+  abandoned workers.
 
 ## v0.10.0 — 2026-07-18
 

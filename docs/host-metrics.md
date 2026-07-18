@@ -11,7 +11,7 @@ healthy metrics from the same cycle.
 sources:
   host:
     interval: 15s
-    collectors: [cpu, load, memory, network, uptime, pressure, uname]
+    collectors: [cpu, load, memory, network, disk, filesystem, uptime, pressure, uname]
     # For a containerized agent, point these at read-only host mounts.
     procfs_path: /host/proc
     sysfs_path: /host/sys
@@ -23,11 +23,12 @@ An empty `collectors` list enables every collector. Collector names are
 validated at startup; unknown and duplicate names are rejected. The interval
 must be at least `100ms`. Filesystem roots must be clean absolute paths.
 
-The default roots are `/proc`, `/sys`, `/`, and `/sys/fs/cgroup`. Only
-`procfs_path` is consumed by the collectors currently implemented. The other
-roots are an explicit compatibility surface for the upcoming filesystem,
-disk, and cgroup increments, so deployments do not need a later configuration
-shape migration.
+The default roots are `/proc`, `/sys`, `/`, and `/sys/fs/cgroup`.
+`procfs_path` supplies kernel counters and mountinfo. `rootfs_path` supplies
+the paths used for local filesystem `statfs` calls. `sysfs_path` and
+`cgroupfs_path` are an explicit compatibility surface for the upcoming device
+metadata and cgroup increments, so deployments do not need a later
+configuration shape migration.
 
 Mount alternate roots read-only. Wisp does not write to procfs, sysfs, the
 host root, or cgroupfs. A typical container needs host PID visibility and
@@ -43,6 +44,13 @@ differ from the host UTS namespace if the container is isolated.
 | `memory` | selected `node_memory_*_bytes` | gauges, `bytes` |
 | `cpu` | `node_cpu_milliseconds_total` | monotonic sum, `ms`; `cpu`, `mode` |
 | `network` | `node_network_receive_bytes_total`, `node_network_transmit_bytes_total` | monotonic sums, `bytes`; `device` |
+| `disk` | `node_disk_reads_completed_total`, `node_disk_reads_merged_total`, `node_disk_writes_completed_total`, `node_disk_writes_merged_total` | monotonic sums; `device`, `major`, `minor` |
+| `disk` | `node_disk_read_bytes_total`, `node_disk_written_bytes_total` | monotonic sums, `bytes`; `device`, `major`, `minor` |
+| `disk` | `node_disk_read_milliseconds_total`, `node_disk_write_milliseconds_total`, `node_disk_io_milliseconds_total`, `node_disk_io_weighted_milliseconds_total` | monotonic sums, `ms`; `device`, `major`, `minor` |
+| `disk` | `node_disk_io_now` | integer gauge; `device`, `major`, `minor` |
+| `disk` | optional discard and flush metrics | kernels exposing those diskstats fields; exact `bytes`, `ms`, or operation counts |
+| `filesystem` | `node_filesystem_size_bytes`, `node_filesystem_free_bytes`, `node_filesystem_avail_bytes` | integer gauges, `bytes`; `device`, `fstype`, `mountpoint` |
+| `filesystem` | `node_filesystem_files`, `node_filesystem_files_free`, `node_filesystem_readonly`, `node_filesystem_device_error` | integer gauges; `device`, `fstype`, `mountpoint` |
 | `uptime` | `node_uptime_seconds`, `node_boot_time_seconds` | gauges, `s` |
 | `pressure` | `node_pressure_<resource>_<scope>_microseconds_total` | monotonic sum, `us` |
 | `pressure` | `node_pressure_<resource>_<scope>_ratio` | gauge, unit `1`; `window=10s|60s|300s` |
@@ -58,6 +66,22 @@ This is why CPU and PSI totals use milliseconds and microseconds instead of
 floating-point seconds. Queries must account for those units when calculating
 rates.
 
+Linux diskstats sectors are converted using the kernel ABI's fixed 512-byte
+sector unit, independent of a device's physical or logical block size. Wisp
+supports the base, discard, and flush field layouts and ignores unknown future
+trailing fields after validating the known prefix.
+
+The filesystem collector reads PID 1 mountinfo first, then falls back to the
+Wisp process mountinfo when PID 1 is hidden. Overmounts are deduplicated by
+mountpoint, keeping the newest mount ID. Pseudo filesystems and remote,
+automounted, and FUSE filesystems are intentionally excluded from `statfs`:
+those calls can block indefinitely when their backing service is unavailable.
+They will become opt-in only after the planned stuck-mount supervisor can
+enforce time bounds without leaking a goroutine every interval. Local
+`ext4`, `xfs`, `btrfs`, `overlay`, `tmpfs`, and other non-excluded filesystem
+types are collected. A failed local mount emits
+`node_filesystem_device_error=1` while healthy mounts remain available.
+
 Every emitted series receives the configured agent resource attributes.
 Future host/container/workload resource detection will be additive and will
 have an explicit conflict policy; it is not inferred silently today.
@@ -66,6 +90,8 @@ have an explicit conflict policy; it is not inferred silently today.
 
 - Kernel virtual-file reads are size-bounded. Missing mandatory files,
   malformed values, and oversized virtual files fail only their collector.
+- Diskstats input is bounded to 4,096 devices. Mountinfo input is bounded to
+  8,192 records and at most 4,096 eligible local mounts are probed.
 - Missing PSI files are classified as unsupported rather than an operational
   error. This allows Wisp to run on kernels without PSI.
 - Partially readable collectors emit valid series and report the attempt as
@@ -75,7 +101,7 @@ have an explicit conflict policy; it is not inferred silently today.
   synthesize missed host samples.
 - Existing configurations remain compatible. Omitting all new fields retains
   the prior paths and interval behavior; the default collector set gains
-  `uptime`, `pressure`, and `uname`.
+  `disk`, `filesystem`, `uptime`, `pressure`, and `uname`.
 
 Wisp exposes the following fixed-cardinality self-observability:
 
@@ -90,4 +116,3 @@ Wisp exposes the following fixed-cardinality self-observability:
 Collector failure logs are transition-aware: the first failure or unsupported
 state is logged, repeated cycles do not create log storms, and recovery is
 logged once.
-

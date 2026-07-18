@@ -59,9 +59,11 @@ second pipeline rewrite.
 - mount-aware, size-bounded procfs foundation with strict collector
   configuration and failure isolation — implemented;
 - PSI, uptime, and UTS kernel metadata — implemented;
+- bounded disk I/O and local filesystem capacity, inode, read-only, and
+  per-mount error telemetry — implemented;
 - collector duration/success gauges and transition-aware failure reporting —
   implemented;
-- disk/filesystem, cgroup v2, and socket telemetry;
+- cgroup v2 and socket telemetry;
 - host/container/workload resource detection;
 - collector-specific time bounds and deeper failure injection.
 
