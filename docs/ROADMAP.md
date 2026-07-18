@@ -69,9 +69,12 @@ second pipeline rewrite.
   implemented;
 - mount-aware fail-open hostname, architecture, and OS resource detection with
   explicit-only stable machine identity — implemented;
+- parallel collector execution with one-in-flight supervision and bounded
+  cycle deadlines that cannot accumulate workers behind a stuck syscall —
+  implemented;
 - bounded workload cgroup enumeration after resource attribution;
 - container/workload resource attribution;
-- collector-specific time bounds and deeper failure injection.
+- deeper failure injection for stuck host mounts.
 
 ## v0.12+ — eBPF and later profiles
 

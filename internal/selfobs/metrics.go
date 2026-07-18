@@ -38,6 +38,7 @@ var (
 	HostCollections           = newCounter("wisp_host_collections_total", "Host metric collection cycles completed.")
 	HostCollectorErrors       = newCounter("wisp_host_collector_errors_total", "Host collector attempts that failed because a configured kernel interface could not be read or parsed.")
 	HostCollectorUnsupported  = newCounter("wisp_host_collector_unsupported_total", "Host collector attempts skipped because the running kernel does not expose the optional interface.")
+	HostCollectorTimeouts     = newCounter("wisp_host_collector_timeouts_total", "Host collector attempts that exceeded their cycle deadline.")
 	HostSeriesEmitted         = newCounter("wisp_host_series_emitted_total", "Host metric series emitted into the metric pipeline.")
 	HostEmitErrors            = newCounter("wisp_host_emit_errors_total", "Host collection batches rejected by the metric pipeline.")
 	SamplesEmitted            = newCounter("wisp_samples_emitted_total", "Data points emitted by sources into the pipeline.")

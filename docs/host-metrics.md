@@ -11,6 +11,7 @@ healthy metrics from the same cycle.
 sources:
   host:
     interval: 15s
+    collector_timeout: 5s
     collectors: [cpu, load, memory, network, socket, disk, filesystem, cgroup, uptime, pressure, uname]
     # For a containerized agent, point these at read-only host mounts.
     procfs_path: /host/proc
@@ -24,7 +25,9 @@ sources:
 
 An empty `collectors` list enables every collector. Collector names are
 validated at startup; unknown and duplicate names are rejected. The interval
-must be at least `100ms`. Filesystem roots must be clean absolute paths.
+must be at least `100ms`. `collector_timeout` must be at least `10ms` and below
+the interval. When omitted it defaults to half the interval, capped at `5s`.
+Filesystem roots must be clean absolute paths.
 
 The default roots are `/proc`, `/sys`, `/`, and `/sys/fs/cgroup`.
 `procfs_path` supplies kernel counters and mountinfo. `rootfs_path` supplies
@@ -153,6 +156,12 @@ require its own bounded identity policy.
   error. This allows Wisp to run on kernels without PSI.
 - Partially readable collectors emit valid series and report the attempt as
   failed, so data remains available without hiding corruption.
+- Enabled collectors start in parallel and share one cycle deadline. A timed
+  out syscall cannot be force-cancelled by Go, so Wisp permits at most one
+  in-flight attempt per collector and skips new attempts until that worker
+  returns. This bounds cycle latency without accumulating one abandoned
+  goroutine per interval. Other collectors continue and shutdown does not wait
+  on the stuck syscall.
 - Host metrics use the existing at-most-one in-memory collection cycle and
   the shared metrics export/spool durability path. Restarting Wisp does not
   synthesize missed host samples.
@@ -169,6 +178,7 @@ Wisp exposes the following fixed-cardinality self-observability:
 - `wisp_host_collector_success{collector}`;
 - `wisp_host_collector_errors_total`;
 - `wisp_host_collector_unsupported_total`;
+- `wisp_host_collector_timeouts_total`;
 - `wisp_host_collections_total`;
 - `wisp_host_series_emitted_total`;
 - `wisp_host_emit_errors_total`.

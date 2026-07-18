@@ -10,13 +10,138 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/yaop-labs/wisp/internal/model"
 	"github.com/yaop-labs/wisp/internal/selfobs"
 )
+
+func TestCollectorWorkerNeverDuplicatesHungAttempt(t *testing.T) {
+	var worker collectorWorker
+	var calls atomic.Int64
+	release := make(chan struct{})
+	collect := func(uint64) ([]model.Series, error) {
+		calls.Add(1)
+		<-release
+		return []model.Series{gaugeInt("test", "", 1, 1, nil)}, nil
+	}
+	done, started := worker.start(collect, 1)
+	if !started {
+		t.Fatal("first attempt did not start")
+	}
+	if _, started := worker.start(collect, 2); started {
+		t.Fatal("second attempt started while first was in flight")
+	}
+	deadline := time.Now().Add(time.Second)
+	for calls.Load() == 0 && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("collector calls = %d, want 1", calls.Load())
+	}
+	close(release)
+	select {
+	case result := <-done:
+		if result.err != nil || len(result.series) != 1 {
+			t.Fatalf("collector result = %+v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("collector did not finish")
+	}
+	deadline = time.Now().Add(time.Second)
+	for {
+		done, started = worker.start(
+			func(uint64) ([]model.Series, error) {
+				calls.Add(1)
+				return nil, nil
+			},
+			3,
+		)
+		if started {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("worker never became available")
+		}
+		runtime.Gosched()
+	}
+	<-done
+	if calls.Load() != 2 {
+		t.Fatalf("collector calls after recovery = %d, want 2", calls.Load())
+	}
+}
+
+func TestCollectionCycleBoundsHungCollectorAndKeepsHealthyData(t *testing.T) {
+	release := make(chan struct{})
+	source := &Source{
+		timeout: 20 * time.Millisecond,
+		logger:  discardLogger(),
+		workers: map[string]*collectorWorker{
+			"fast": {},
+			"hung": {},
+		},
+		durations: make(map[string]float64),
+		success:   make(map[string]float64),
+		states:    make(map[string]string),
+	}
+	source.collectorEntries = []collectorEntry{
+		{
+			name: "fast",
+			collect: func(ts uint64) ([]model.Series, error) {
+				return []model.Series{
+					gaugeInt("healthy", "", ts, 1, nil),
+				}, nil
+			},
+		},
+		{
+			name: "hung",
+			collect: func(uint64) ([]model.Series, error) {
+				<-release
+				return nil, nil
+			},
+		},
+	}
+	timeoutsBefore := selfobs.HostCollectorTimeouts.Get()
+	var batch model.Batch
+	started := time.Now()
+	source.collectAndEmit(
+		context.Background(),
+		func(_ context.Context, emitted model.Batch) error {
+			batch = emitted
+			return nil
+		},
+	)
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("bounded collection took %v", elapsed)
+	}
+	if len(batch.Series) != 1 || batch.Series[0].Name != "healthy" {
+		t.Fatalf("healthy collector data was lost: %+v", batch)
+	}
+	if got := selfobs.HostCollectorTimeouts.Get(); got != timeoutsBefore+1 {
+		t.Fatalf("timeouts = %d, want %d", got, timeoutsBefore+1)
+	}
+
+	// The next cycle must not spawn or wait on another hung attempt.
+	started = time.Now()
+	source.collectAndEmit(
+		context.Background(),
+		func(_ context.Context, emitted model.Batch) error {
+			batch = emitted
+			return nil
+		},
+	)
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("in-flight skip took %v", elapsed)
+	}
+	if len(batch.Series) != 1 || batch.Series[0].Name != "healthy" {
+		t.Fatalf("second-cycle healthy data was lost: %+v", batch)
+	}
+	close(release)
+}
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))

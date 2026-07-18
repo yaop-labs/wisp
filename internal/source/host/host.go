@@ -28,6 +28,11 @@ const userHZ = 100
 // running host. It is observable but does not count as a collection error.
 var ErrUnsupported = errors.New("host collector unsupported")
 
+var (
+	ErrCollectorTimeout  = errors.New("host collector timed out")
+	ErrCollectorInFlight = errors.New("previous host collector attempt is still running")
+)
+
 // Paths are read-only Linux virtual-filesystem roots. Alternate roots support
 // a containerized Wisp with host /proc, /sys, /, and cgroup2 mounts.
 type Paths struct {
@@ -72,6 +77,11 @@ type Source struct {
 	resource   model.Labels
 	logger     *slog.Logger
 	paths      Paths
+	timeout    time.Duration
+	workers    map[string]*collectorWorker
+	// collectorEntries is nil in production. Package tests replace the
+	// registry to exercise timeout supervision without a blocking kernel file.
+	collectorEntries []collectorEntry
 
 	statsMu   sync.RWMutex
 	durations map[string]float64
@@ -112,6 +122,8 @@ func NewWithPaths(
 		interval: interval, collectors: set,
 		resource: resource, logger: logger,
 		paths:     normalizedPaths(paths),
+		timeout:   defaultCollectorTimeout(interval),
+		workers:   make(map[string]*collectorWorker),
 		durations: make(map[string]float64),
 		success:   make(map[string]float64),
 		states:    make(map[string]string),
@@ -120,6 +132,7 @@ func NewWithPaths(
 		if source.enabled(collector.name) {
 			source.durations[collector.name] = 0
 			source.success[collector.name] = 0
+			source.workers[collector.name] = &collectorWorker{}
 		}
 	}
 	selfobs.RegisterGaugeVecFunc(
@@ -135,6 +148,29 @@ func NewWithPaths(
 		source.successSnapshot,
 	)
 	return source
+}
+
+func defaultCollectorTimeout(interval time.Duration) time.Duration {
+	timeout := interval / 2
+	if timeout > 5*time.Second {
+		timeout = 5 * time.Second
+	}
+	return timeout
+}
+
+// WithCollectorTimeout overrides the per-cycle collector deadline. It must be
+// called during source construction, before Start.
+func (s *Source) WithCollectorTimeout(timeout time.Duration) *Source {
+	if timeout > 0 {
+		s.timeout = timeout
+	}
+	return s
+}
+
+// CollectorTimeout returns the effective deadline used for one collection
+// cycle.
+func (s *Source) CollectorTimeout() time.Duration {
+	return s.timeout
 }
 
 func (s *Source) enabled(name string) bool {
@@ -167,7 +203,43 @@ type collectorEntry struct {
 	collect func(uint64) ([]model.Series, error)
 }
 
+type collectorResult struct {
+	series []model.Series
+	err    error
+}
+
+type collectorWorker struct {
+	mu      sync.Mutex
+	running bool
+}
+
+func (w *collectorWorker) start(
+	collect func(uint64) ([]model.Series, error),
+	ts uint64,
+) (<-chan collectorResult, bool) {
+	w.mu.Lock()
+	if w.running {
+		w.mu.Unlock()
+		return nil, false
+	}
+	w.running = true
+	w.mu.Unlock()
+
+	done := make(chan collectorResult, 1)
+	go func() {
+		series, err := collect(ts)
+		w.mu.Lock()
+		w.running = false
+		w.mu.Unlock()
+		done <- collectorResult{series: series, err: err}
+	}()
+	return done, true
+}
+
 func (s *Source) collectorRegistry() []collectorEntry {
+	if s.collectorEntries != nil {
+		return s.collectorEntries
+	}
 	return []collectorEntry{
 		{"load", s.load},
 		{"memory", s.memory},
@@ -185,17 +257,63 @@ func (s *Source) collectorRegistry() []collectorEntry {
 
 func (s *Source) collectAndEmit(ctx context.Context, emit func(context.Context, model.Batch) error) {
 	now := uint64(time.Now().UnixNano())
-	var series []model.Series
+	type collectorAttempt struct {
+		name    string
+		started time.Time
+		done    <-chan collectorResult
+		active  bool
+	}
+	var attempts []collectorAttempt
 	for _, collector := range s.collectorRegistry() {
-		if s.enabled(collector.name) {
-			started := time.Now()
-			collected, err := collector.collect(now)
+		if !s.enabled(collector.name) {
+			continue
+		}
+		done, active := s.workers[collector.name].start(
+			collector.collect,
+			now,
+		)
+		attempts = append(attempts, collectorAttempt{
+			name:    collector.name,
+			started: time.Now(),
+			done:    done,
+			active:  active,
+		})
+	}
+
+	cycle, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	var series []model.Series
+	for _, attempt := range attempts {
+		if !attempt.active {
 			s.recordCollectorResult(
-				collector.name,
-				time.Since(started),
+				attempt.name,
+				time.Since(attempt.started),
+				ErrCollectorInFlight,
+			)
+			continue
+		}
+		select {
+		case result := <-attempt.done:
+			s.recordCollectorResult(
+				attempt.name,
+				time.Since(attempt.started),
+				result.err,
+			)
+			series = append(series, result.series...)
+		case <-cycle.Done():
+			if ctx.Err() != nil {
+				return
+			}
+			err := cycle.Err()
+			if errors.Is(err, context.DeadlineExceeded) {
+				err = ErrCollectorTimeout
+				selfobs.HostCollectorTimeouts.Inc()
+			}
+			s.recordCollectorResult(
+				attempt.name,
+				time.Since(attempt.started),
 				err,
 			)
-			series = append(series, collected...)
 		}
 	}
 	for i := range series {

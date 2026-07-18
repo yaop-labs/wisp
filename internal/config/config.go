@@ -74,6 +74,7 @@ type SourcesConfig struct {
 // HostSource configures node/host metric collection from /proc, /sys, cgroups.
 type HostSource struct {
 	Interval          Duration               `yaml:"interval"`
+	CollectorTimeout  Duration               `yaml:"collector_timeout"`
 	Collectors        []string               `yaml:"collectors"`
 	ProcFSPath        string                 `yaml:"procfs_path"`
 	SysFSPath         string                 `yaml:"sysfs_path"`
@@ -479,6 +480,22 @@ func (c *Config) Validate() error {
 			return fmt.Errorf(
 				"sources.host.interval must be at least 100ms",
 			)
+		}
+		if timeout := host.CollectorTimeout.Std(); timeout != 0 {
+			if timeout < 10*time.Millisecond {
+				return fmt.Errorf(
+					"sources.host.collector_timeout must be at least 10ms",
+				)
+			}
+			interval := host.Interval.Std()
+			if interval == 0 {
+				interval = 15 * time.Second
+			}
+			if timeout >= interval {
+				return fmt.Errorf(
+					"sources.host.collector_timeout must be below the collection interval",
+				)
+			}
 		}
 		validCollectors := map[string]struct{}{
 			"cgroup": {}, "cpu": {}, "disk": {}, "filesystem": {},

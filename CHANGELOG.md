@@ -24,6 +24,9 @@ versioning without treating `v1.0.0` as a schedule target.
 - mount-aware fail-open host hostname, architecture, and OS resource detection
   that fills only missing attributes, with privacy-sensitive stable machine ID
   detection disabled unless explicitly enabled;
+- parallel host collector execution with a configurable cycle deadline and
+  one-in-flight supervision that prevents repeated workers behind a stuck
+  kernel or filesystem syscall;
 - per-collector duration/success gauges plus host collection, unsupported,
   failure, emitted-series, and pipeline-admission counters;
 - deterministic procfs fixtures covering alternate mounts, malformed data,
@@ -47,7 +50,10 @@ versioning without treating `v1.0.0` as a schedule target.
   abandoned workers;
 - host metrics gain missing standard host/OS resource attributes by default;
   explicit resource values remain authoritative and deployments can disable
-  detection entirely.
+  detection entirely;
+- a timed-out host collector no longer stalls healthy collectors or shutdown;
+  repeated cycles do not spawn duplicate work while its original syscall
+  remains blocked.
 
 ## v0.10.0 — 2026-07-18
 

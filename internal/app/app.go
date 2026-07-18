@@ -152,9 +152,20 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 					)
 				}
 			}
+			source := hostsrc.NewWithPaths(
+				hc.Interval.Std(),
+				hc.Collectors,
+				hostResource,
+				paths,
+				logger,
+			)
+			if timeout := hc.CollectorTimeout.Std(); timeout > 0 {
+				source.WithCollectorTimeout(timeout)
+			}
 			logger.Info(
 				"host source enabled",
 				"interval", hc.Interval.Std(),
+				"collector_timeout", source.CollectorTimeout(),
 				"collectors", hc.Collectors,
 				"procfs_path", paths.ProcFS,
 				"sysfs_path", paths.SysFS,
@@ -163,13 +174,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				"resource_detection", detectionEnabled,
 				"host_id_detection", includeHostID,
 			)
-			return hostsrc.NewWithPaths(
-				hc.Interval.Std(),
-				hc.Collectors,
-				hostResource,
-				paths,
-				logger,
-			), nil
+			return source, nil
 		}},
 		{"scrape", cfg.Sources.Scrape != nil, func() (pipeline.Source, error) {
 			sc := cfg.Sources.Scrape

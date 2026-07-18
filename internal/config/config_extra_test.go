@@ -101,6 +101,14 @@ resource: {attributes: {service.name: wisp}}`, "below hash_seed resolution"},
 sources: {host: {interval: 99ms}}
 exporter: {otlp: {endpoint: "x:4317"}}
 resource: {attributes: {service.name: wisp}}`, "interval must be at least 100ms"},
+		{"host collector timeout too short", `
+sources: {host: {interval: 1s, collector_timeout: 9ms}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, "collector_timeout must be at least 10ms"},
+		{"host collector timeout reaches interval", `
+sources: {host: {interval: 1s, collector_timeout: 1s}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, "collector_timeout must be below the collection interval"},
 		{"unknown host collector", `
 sources: {host: {collectors: [cpu, typo]}}
 exporter: {otlp: {endpoint: "x:4317"}}
