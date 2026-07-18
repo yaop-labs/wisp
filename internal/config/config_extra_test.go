@@ -97,6 +97,26 @@ resource: {attributes: {service.name: wisp}}`, "between 0 and 100"},
 sources: {otlp: {grpc: "127.0.0.1:4317", traces: {sampling: {mode: hash_seed, sampling_percentage: 0.00001}}}}
 exporter: {otlp: {endpoint: "x:4317"}}
 resource: {attributes: {service.name: wisp}}`, "below hash_seed resolution"},
+		{"host interval too short", `
+sources: {host: {interval: 99ms}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, "interval must be at least 100ms"},
+		{"unknown host collector", `
+sources: {host: {collectors: [cpu, typo]}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, `unsupported collector "typo"`},
+		{"duplicate host collector", `
+sources: {host: {collectors: [cpu, cpu]}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, `duplicate collector "cpu"`},
+		{"relative host virtual filesystem path", `
+sources: {host: {procfs_path: host/proc}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, "procfs_path must be a clean absolute path"},
+		{"unclean host virtual filesystem path", `
+sources: {host: {sysfs_path: /host/sys/../sys}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, "sysfs_path must be a clean absolute path"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

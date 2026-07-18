@@ -8,10 +8,15 @@ agent:
     endpoint: "0.0.0.0:9090"
 
 sources:
-  # Node metrics from /proc, /sys: cpu, memory, network, load.
+  # Bounded Linux host metrics. Empty collectors means all available.
   host:
     interval: 15s
-    collectors: [cpu, memory, network, load]
+    collectors: [cpu, memory, network, load, uptime, pressure, uname]
+    # For a containerized agent, use read-only host mounts:
+    # procfs_path: /host/proc
+    # sysfs_path: /host/sys
+    # rootfs_path: /host/root
+    # cgroupfs_path: /host/sys/fs/cgroup
 
   # Prometheus/OpenMetrics pull scraping: static targets and/or file_sd.
   # scrape:

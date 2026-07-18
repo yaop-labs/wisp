@@ -22,7 +22,8 @@ Traces paths:
   workload/container identity, and label allowlists;
 - bounded journald collection through binary-safe Journal Export Format with
   durable cursors, filters, redaction, and explicit oversized-message handling;
-- Linux host metrics from `/proc`;
+- bounded Linux host metrics from configurable virtual-filesystem roots,
+  including CPU, memory, network, load, uptime, PSI, and UTS metadata;
 - relabel, counter-reset, and cardinality processors;
 - OTLP gRPC/HTTP export with retry, bounded crash-safe spool, and backpressure;
 - Reef TLS, mTLS, and bearer authentication on ingress and egress;
@@ -31,6 +32,7 @@ Traces paths:
 Stateful trace tail sampling and the actual eBPF backend remain planned, not
 silently simulated.
 See [the roadmap](docs/ROADMAP.md) and
+[the Linux host metric contract](docs/host-metrics.md), plus
 [the signal extensibility ADR](docs/adr/0001-signal-extensible-core.md).
 
 ## Build and test

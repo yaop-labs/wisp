@@ -36,6 +36,10 @@ func newCounter(name, help string) *Counter {
 // Agent self-metrics, incremented from the collection and export paths.
 var (
 	HostCollections           = newCounter("wisp_host_collections_total", "Host metric collection cycles completed.")
+	HostCollectorErrors       = newCounter("wisp_host_collector_errors_total", "Host collector attempts that failed because a configured kernel interface could not be read or parsed.")
+	HostCollectorUnsupported  = newCounter("wisp_host_collector_unsupported_total", "Host collector attempts skipped because the running kernel does not expose the optional interface.")
+	HostSeriesEmitted         = newCounter("wisp_host_series_emitted_total", "Host metric series emitted into the metric pipeline.")
+	HostEmitErrors            = newCounter("wisp_host_emit_errors_total", "Host collection batches rejected by the metric pipeline.")
 	SamplesEmitted            = newCounter("wisp_samples_emitted_total", "Data points emitted by sources into the pipeline.")
 	BatchesExported           = newCounter("wisp_batches_exported_total", "Batches successfully shipped by an exporter.")
 	ExportFailures            = newCounter("wisp_export_failures_total", "Export attempts that returned an error.")

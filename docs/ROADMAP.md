@@ -56,9 +56,14 @@ second pipeline rewrite.
 
 ## v0.11.x — Linux host depth
 
-- disk/filesystem, cgroup v2, PSI, socket, uptime, and kernel metadata;
+- mount-aware, size-bounded procfs foundation with strict collector
+  configuration and failure isolation — implemented;
+- PSI, uptime, and UTS kernel metadata — implemented;
+- collector duration/success gauges and transition-aware failure reporting —
+  implemented;
+- disk/filesystem, cgroup v2, and socket telemetry;
 - host/container/workload resource detection;
-- collector-specific time bounds and self-observability.
+- collector-specific time bounds and deeper failure injection.
 
 ## v0.12+ — eBPF and later profiles
 

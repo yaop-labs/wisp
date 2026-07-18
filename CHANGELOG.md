@@ -5,7 +5,26 @@ versioning without treating `v1.0.0` as a schedule target.
 
 ## Unreleased
 
-No changes yet.
+### Added
+
+- configurable read-only procfs, sysfs, rootfs, and cgroupfs roots for
+  containerized host collection without a later configuration-shape migration;
+- bounded Linux uptime, boot-time, PSI, and UTS metadata collectors;
+- per-collector duration/success gauges plus host collection, unsupported,
+  failure, emitted-series, and pipeline-admission counters;
+- deterministic procfs fixtures covering alternate mounts, malformed data,
+  unsupported kernels, partial collector failure, and metric contracts.
+
+### Changed
+
+- host collector names, duplicates, intervals, and virtual-filesystem paths are
+  validated at startup;
+- existing procfs collectors use bounded reads and report malformed or empty
+  kernel data while allowing healthy collectors and partial valid series to
+  continue;
+- the default host collector set now also includes uptime, PSI, and UTS
+  metadata; missing PSI support is classified separately from collection
+  errors and repeated state logs are suppressed.
 
 ## v0.10.0 — 2026-07-18
 

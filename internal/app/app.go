@@ -114,8 +114,35 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	}{
 		{"host", cfg.Sources.Host != nil, func() (pipeline.Source, error) {
 			hc := cfg.Sources.Host
-			logger.Info("host source enabled", "interval", hc.Interval.Std())
-			return hostsrc.New(hc.Interval.Std(), hc.Collectors, resource, logger), nil
+			paths := hostsrc.DefaultPaths()
+			if hc.ProcFSPath != "" {
+				paths.ProcFS = hc.ProcFSPath
+			}
+			if hc.SysFSPath != "" {
+				paths.SysFS = hc.SysFSPath
+			}
+			if hc.RootFSPath != "" {
+				paths.RootFS = hc.RootFSPath
+			}
+			if hc.CgroupFSPath != "" {
+				paths.CgroupFS = hc.CgroupFSPath
+			}
+			logger.Info(
+				"host source enabled",
+				"interval", hc.Interval.Std(),
+				"collectors", hc.Collectors,
+				"procfs_path", paths.ProcFS,
+				"sysfs_path", paths.SysFS,
+				"rootfs_path", paths.RootFS,
+				"cgroupfs_path", paths.CgroupFS,
+			)
+			return hostsrc.NewWithPaths(
+				hc.Interval.Std(),
+				hc.Collectors,
+				resource,
+				paths,
+				logger,
+			), nil
 		}},
 		{"scrape", cfg.Sources.Scrape != nil, func() (pipeline.Source, error) {
 			sc := cfg.Sources.Scrape

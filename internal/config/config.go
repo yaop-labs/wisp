@@ -73,8 +73,12 @@ type SourcesConfig struct {
 
 // HostSource configures node/host metric collection from /proc, /sys, cgroups.
 type HostSource struct {
-	Interval   Duration `yaml:"interval"`
-	Collectors []string `yaml:"collectors"`
+	Interval     Duration `yaml:"interval"`
+	Collectors   []string `yaml:"collectors"`
+	ProcFSPath   string   `yaml:"procfs_path"`
+	SysFSPath    string   `yaml:"sysfs_path"`
+	RootFSPath   string   `yaml:"rootfs_path"`
+	CgroupFSPath string   `yaml:"cgroupfs_path"`
 }
 
 // ScrapeSource configures Prometheus/OpenMetrics pull scraping.
@@ -457,6 +461,50 @@ func (c *Config) Validate() error {
 				uint32(percentage*(buckets/100)) == 0 {
 				return fmt.Errorf(
 					"sources.otlp.traces.sampling.sampling_percentage is below hash_seed resolution",
+				)
+			}
+		}
+	}
+	if host := c.Sources.Host; host != nil {
+		if interval := host.Interval.Std(); interval != 0 &&
+			interval < 100*time.Millisecond {
+			return fmt.Errorf(
+				"sources.host.interval must be at least 100ms",
+			)
+		}
+		validCollectors := map[string]struct{}{
+			"cpu": {}, "load": {}, "memory": {},
+			"network": {}, "pressure": {}, "uname": {},
+			"uptime": {},
+		}
+		seen := make(map[string]struct{}, len(host.Collectors))
+		for _, collector := range host.Collectors {
+			if _, valid := validCollectors[collector]; !valid {
+				return fmt.Errorf(
+					"sources.host.collectors contains unsupported collector %q",
+					collector,
+				)
+			}
+			if _, duplicate := seen[collector]; duplicate {
+				return fmt.Errorf(
+					"sources.host.collectors contains duplicate collector %q",
+					collector,
+				)
+			}
+			seen[collector] = struct{}{}
+		}
+		for name, path := range map[string]string{
+			"procfs_path":   host.ProcFSPath,
+			"sysfs_path":    host.SysFSPath,
+			"rootfs_path":   host.RootFSPath,
+			"cgroupfs_path": host.CgroupFSPath,
+		} {
+			if path != "" && (!filepath.IsAbs(path) ||
+				filepath.Clean(path) != path ||
+				strings.IndexByte(path, 0) >= 0) {
+				return fmt.Errorf(
+					"sources.host.%s must be a clean absolute path",
+					name,
 				)
 			}
 		}
