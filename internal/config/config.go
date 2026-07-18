@@ -62,11 +62,12 @@ type SelfMetricsConfig struct {
 
 // SourcesConfig enables the collection sources. A nil pointer means disabled.
 type SourcesConfig struct {
-	Host    *HostSource    `yaml:"host"`
-	Scrape  *ScrapeSource  `yaml:"scrape"`
-	OTLP    *OTLPSource    `yaml:"otlp"`
-	FileLog *FileLogSource `yaml:"filelog"`
-	EBPF    *EBPFSource    `yaml:"ebpf"`
+	Host     *HostSource     `yaml:"host"`
+	Scrape   *ScrapeSource   `yaml:"scrape"`
+	OTLP     *OTLPSource     `yaml:"otlp"`
+	FileLog  *FileLogSource  `yaml:"filelog"`
+	Journald *JournaldSource `yaml:"journald"`
+	EBPF     *EBPFSource     `yaml:"ebpf"`
 }
 
 // HostSource configures node/host metric collection from /proc, /sys, cgroups.
@@ -164,6 +165,28 @@ type FileLogMultiline struct {
 type FileLogTimestamp struct {
 	Pattern string `yaml:"pattern"`
 	Format  string `yaml:"format"`
+}
+
+// JournaldSource configures bounded journalctl export polling. Cursor
+// checkpoints advance only after durable log admission.
+type JournaldSource struct {
+	CheckpointFile string             `yaml:"checkpoint_file"`
+	PollInterval   Duration           `yaml:"poll_interval"`
+	Timeout        Duration           `yaml:"timeout"`
+	StartAt        string             `yaml:"start_at"`
+	Directory      string             `yaml:"directory"`
+	Units          []string           `yaml:"units"`
+	Identifiers    []string           `yaml:"identifiers"`
+	MaxEntries     int                `yaml:"max_entries_per_poll"`
+	MaxFieldBytes  int                `yaml:"max_field_bytes"`
+	MaxBatchBytes  int                `yaml:"max_batch_bytes"`
+	Redaction      *JournaldRedaction `yaml:"redaction"`
+}
+
+// JournaldRedaction replaces MESSAGE regex matches before durable storage.
+type JournaldRedaction struct {
+	Patterns    []string `yaml:"patterns"`
+	Replacement string   `yaml:"replacement"`
 }
 
 // EBPFSource configures kernel-side probes (Linux-only, requires CAP_BPF).
@@ -454,6 +477,123 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("sources.filelog.max_read_bytes_per_poll must be between max_batch_bytes and %d", 64<<20)
 		}
 	}
+	if j := c.Sources.Journald; j != nil {
+		if j.CheckpointFile == "" {
+			return fmt.Errorf("sources.journald.checkpoint_file is required")
+		}
+		if interval := j.PollInterval.Std(); interval != 0 &&
+			interval < 100*time.Millisecond {
+			return fmt.Errorf(
+				"sources.journald.poll_interval must be at least 100ms",
+			)
+		}
+		if timeout := j.Timeout.Std(); timeout != 0 &&
+			(timeout < time.Second || timeout > time.Minute) {
+			return fmt.Errorf(
+				"sources.journald.timeout must be between 1s and 1m",
+			)
+		}
+		if j.StartAt != "" && j.StartAt != "beginning" &&
+			j.StartAt != "end" {
+			return fmt.Errorf(
+				"sources.journald.start_at must be beginning or end",
+			)
+		}
+		if j.Directory != "" &&
+			(!filepath.IsAbs(j.Directory) ||
+				filepath.Clean(j.Directory) == string(filepath.Separator)) {
+			return fmt.Errorf(
+				"sources.journald.directory must be an absolute non-root path",
+			)
+		}
+		if len(j.Units) > 128 || len(j.Identifiers) > 128 {
+			return fmt.Errorf(
+				"sources.journald units and identifiers support at most 128 values each",
+			)
+		}
+		for _, value := range append(
+			append([]string(nil), j.Units...),
+			j.Identifiers...,
+		) {
+			if value == "" || len(value) > 256 ||
+				!utf8.ValidString(value) ||
+				strings.IndexFunc(value, unicode.IsControl) >= 0 {
+				return fmt.Errorf(
+					"sources.journald unit and identifier filters must be printable UTF-8 up to 256 bytes",
+				)
+			}
+		}
+		maxEntries := j.MaxEntries
+		if maxEntries == 0 {
+			maxEntries = 512
+		}
+		if maxEntries < 1 || maxEntries > 10_000 {
+			return fmt.Errorf(
+				"sources.journald.max_entries_per_poll must be between 1 and 10000",
+			)
+		}
+		maxField := j.MaxFieldBytes
+		if maxField == 0 {
+			maxField = 256 << 10
+		}
+		if maxField < 1 || maxField > 1<<20 {
+			return fmt.Errorf(
+				"sources.journald.max_field_bytes must be between 1 and %d",
+				1<<20,
+			)
+		}
+		maxBatch := j.MaxBatchBytes
+		if maxBatch == 0 {
+			maxBatch = 512 << 10
+		}
+		if maxBatch < 8<<10 || maxBatch < maxField ||
+			maxBatch > otlpwire.DefaultMaxRequestBytes {
+			return fmt.Errorf(
+				"sources.journald.max_batch_bytes must be at least 8192, at least max_field_bytes, and at most %d",
+				otlpwire.DefaultMaxRequestBytes,
+			)
+		}
+		if j.Redaction != nil {
+			if len(j.Redaction.Patterns) == 0 ||
+				len(j.Redaction.Patterns) > 16 {
+				return fmt.Errorf(
+					"sources.journald.redaction.patterns must contain between 1 and 16 rules",
+				)
+			}
+			for index, pattern := range j.Redaction.Patterns {
+				if pattern == "" || len(pattern) > 1024 {
+					return fmt.Errorf(
+						"sources.journald.redaction.patterns[%d] must contain between 1 and 1024 bytes",
+						index,
+					)
+				}
+				compiled, err := regexp.Compile(pattern)
+				if err != nil {
+					return fmt.Errorf(
+						"sources.journald.redaction.patterns[%d] is not a valid regular expression",
+						index,
+					)
+				}
+				if compiled.MatchString("") {
+					return fmt.Errorf(
+						"sources.journald.redaction.patterns[%d] must not match empty input",
+						index,
+					)
+				}
+			}
+			replacement := j.Redaction.Replacement
+			if replacement == "" {
+				replacement = "[REDACTED]"
+			}
+			if len(replacement) > 256 ||
+				!utf8.ValidString(replacement) ||
+				strings.IndexFunc(replacement, unicode.IsControl) >= 0 {
+				return fmt.Errorf(
+					"sources.journald.redaction.replacement must be valid printable UTF-8 up to 256 bytes",
+				)
+			}
+		}
+	}
 	// Reef owns the transport-security contract. Disabled blocks are validated
 	// here without filesystem I/O; enabled blocks are fully materialized (and
 	// their files checked) when app wiring builds the edge.
@@ -520,6 +660,9 @@ func (s SourcesConfig) Enabled() []string {
 	}
 	if s.FileLog != nil {
 		names = append(names, "filelog")
+	}
+	if s.Journald != nil {
+		names = append(names, "journald")
 	}
 	if s.EBPF != nil {
 		names = append(names, "ebpf")

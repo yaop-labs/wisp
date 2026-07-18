@@ -89,6 +89,24 @@ sources:
   #   kubernetes:
   #     pod_logs_root: /var/log/pods # change when kubelet podLogsDir is mounted elsewhere
 
+  # Read systemd journal entries through binary-safe Journal Export Format.
+  # journald:
+  #   checkpoint_file: "/var/lib/wisp/journald-checkpoint.json"
+  #   poll_interval: 1s
+  #   timeout: 10s
+  #   start_at: end                    # beginning | end for a new checkpoint
+  #   # directory: /host/var/log/journal # optional read-only mounted journals
+  #   units: [checkout.service]        # optional journalctl --unit filters
+  #   identifiers: [checkout-worker]   # optional SYSLOG_IDENTIFIER filters
+  #   max_entries_per_poll: 512
+  #   max_field_bytes: 262144          # oversized MESSAGE is marked and omitted
+  #   max_batch_bytes: 524288
+  #   redaction:                       # MESSAGE only, before OTLP/spool
+  #     patterns:
+  #       - '(?i)authorization:\s*bearer\s+\S+'
+  #       - 'token=[^&\s]+'
+  #     replacement: '[REDACTED]'
+
   # Kernel-side RED/L7 metrics without instrumenting the app. Linux-only, CAP_BPF.
   # ebpf:
   #   probes: [http, grpc]
@@ -141,8 +159,8 @@ exporter:
       traces:
         max_bytes: 134217728
     # Backpressure: when the spool passes ~80% of max_bytes, wisp sheds at the
-    # source — pull scrapes are skipped, file tailing pauses, and the OTLP
-    # receiver returns 429 / RESOURCE_EXHAUSTED — then releases below ~50%.
+    # source — pull scrapes are skipped, file/journald reading pauses, and the
+    # OTLP receiver returns 429 / RESOURCE_EXHAUSTED — then releases below ~50%.
 
 resource:
   attributes:

@@ -35,6 +35,10 @@ versioning without treating `v1.0.0` as a schedule target.
 - explicit bounded text timestamp capture for RFC3339 and Unix epoch units,
   parsed after framing and before redaction without dropping records on
   timestamp errors.
+- bounded journald collection through binary-safe Journal Export Format with
+  durable cursors, start boundaries, unit/identifier filters, syslog severity
+  mapping, pre-spool redaction, explicit oversized-message markers, and
+  readiness/self-observability coverage.
 
 ### Changed
 
@@ -61,6 +65,9 @@ versioning without treating `v1.0.0` as a schedule target.
   without falling back to secret-bearing content.
 - filelog checkpoint versions 1 and 2 remain readable and upgrade to version 3
   on write; v3 records multiline oversized-continuation state.
+- journald cursor checkpoints advance only after delivery or spool fsync;
+  crashes at the admission/checkpoint boundary may duplicate the final batch
+  but do not silently skip it.
 
 ## v0.7.0 — 2026-07-17
 

@@ -12,17 +12,18 @@ and Traces passthrough:
 - OTLP metrics, logs, and traces receive/export over gRPC and HTTP/protobuf;
 - bounded text and Kubernetes CRI file tailing with crash-safe checkpoints,
   CRI timestamp/fragment assembly, path-derived Kubernetes resource identity,
-  bounded multiline assembly, explicit text timestamps, pre-spool content redaction, and
-  rotate/truncate detection;
+  bounded multiline assembly, explicit text timestamps, pre-spool content
+  redaction, and rotate/truncate detection;
+- bounded journald collection through binary-safe Journal Export Format with
+  durable cursors, filters, redaction, and explicit oversized-message handling;
 - Linux host metrics from `/proc`;
 - relabel, counter-reset, and cardinality processors;
 - OTLP gRPC/HTTP export with retry, bounded crash-safe spool, and backpressure;
 - Reef TLS, mTLS, and bearer authentication on ingress and egress;
 - Gyre lifecycle, readiness, status, and generation-aware reload.
 
-Journald and application-level multiline log parsing, trace-aware
-batching/sampling, and the actual eBPF backend are planned, not silently
-simulated.
+Trace-aware batching/sampling and the actual eBPF backend are planned, not
+silently simulated.
 See [the roadmap](docs/ROADMAP.md) and
 [the signal extensibility ADR](docs/adr/0001-signal-extensible-core.md).
 

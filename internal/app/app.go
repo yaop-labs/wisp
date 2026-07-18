@@ -34,6 +34,7 @@ import (
 	ebpfsrc "github.com/yaop-labs/wisp/internal/source/ebpf"
 	filelogsrc "github.com/yaop-labs/wisp/internal/source/filelog"
 	hostsrc "github.com/yaop-labs/wisp/internal/source/host"
+	journaldsrc "github.com/yaop-labs/wisp/internal/source/journald"
 	otlprecv "github.com/yaop-labs/wisp/internal/source/otlp"
 	scrapesrc "github.com/yaop-labs/wisp/internal/source/scrape"
 )
@@ -100,9 +101,10 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// and constructor). Adding a source is one entry here plus its config field
 	// and config.SourcesConfig.Enabled - not scattered if-blocks.
 	var (
-		scrapeSrc  *scrapesrc.Source
-		otlpRecv   *otlprecv.Receiver
-		filelogSrc *filelogsrc.Source
+		scrapeSrc   *scrapesrc.Source
+		otlpRecv    *otlprecv.Receiver
+		filelogSrc  *filelogsrc.Source
+		journaldSrc *journaldsrc.Source
 	)
 	registry := []struct {
 		name    string
@@ -202,6 +204,50 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				"max_batch_bytes", maxBatchBytes)
 			return source, nil
 		}},
+		{"journald", cfg.Sources.Journald != nil, func() (pipeline.Source, error) {
+			jc := cfg.Sources.Journald
+			maxFieldBytes, maxBatchBytes := effectiveJournaldBounds(
+				jc,
+				logRequestBytes,
+			)
+			var redaction *journaldsrc.RedactionConfig
+			if jc.Redaction != nil {
+				redaction = &journaldsrc.RedactionConfig{
+					Patterns:    slices.Clone(jc.Redaction.Patterns),
+					Replacement: jc.Redaction.Replacement,
+				}
+			}
+			source, err := journaldsrc.New(journaldsrc.Config{
+				CheckpointFile: jc.CheckpointFile,
+				PollInterval:   jc.PollInterval.Std(),
+				Timeout:        jc.Timeout.Std(),
+				StartAt:        jc.StartAt,
+				Directory:      jc.Directory,
+				Units:          slices.Clone(jc.Units),
+				Identifiers:    slices.Clone(jc.Identifiers),
+				MaxEntries:     jc.MaxEntries,
+				MaxFieldBytes:  maxFieldBytes,
+				MaxBatchBytes:  maxBatchBytes,
+				Redaction:      redaction,
+				Resource:       maps.Clone(cfg.Resource.Attributes),
+			}, logger)
+			if err != nil {
+				return nil, err
+			}
+			journaldSrc = source
+			logger.Info(
+				"journald source enabled",
+				"checkpoint_file", jc.CheckpointFile,
+				"start_at", jc.StartAt,
+				"directory", jc.Directory,
+				"units", len(jc.Units),
+				"identifiers", len(jc.Identifiers),
+				"max_entries_per_poll", jc.MaxEntries,
+				"max_field_bytes", maxFieldBytes,
+				"max_batch_bytes", maxBatchBytes,
+			)
+			return source, nil
+		}},
 		{"ebpf", cfg.Sources.EBPF != nil, func() (pipeline.Source, error) {
 			ok, reason := ebpfsrc.Available()
 			logger.Info("ebpf source configured", "available", ok, "reason", reason, "probes", cfg.Sources.EBPF.Probes)
@@ -262,7 +308,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		logsSender   signal.Sender
 		tracesSender signal.Sender
 	)
-	if otlpRecv != nil || filelogSrc != nil {
+	if otlpRecv != nil || filelogSrc != nil || journaldSrc != nil {
 		signalConfig := otlpexp.Config{
 			Endpoint:                       cfg.Exporter.OTLP.Endpoint,
 			Protocol:                       cfg.Exporter.OTLP.Protocol,
@@ -369,6 +415,17 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				return queue.Accept(ctx, envelope)
 			})
 		}
+		if journaldSrc != nil {
+			journaldSrc.SetLogsEmitter(func(
+				ctx context.Context,
+				envelope signal.Envelope,
+			) error {
+				if queue.UnderSignalPressure(signal.Logs) {
+					return pipeline.ErrBackpressure
+				}
+				return queue.Accept(ctx, envelope)
+			})
+		}
 		// Close the backpressure loop: when the spool crosses its high-water
 		// mark, emit sheds at the source (pull) / returns 429 (push).
 		p.SetPressure(sp.UnderPressure)
@@ -420,6 +477,9 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		if filelogSrc != nil {
 			filelogSrc.SetLogsEmitter(logsSender.Send)
 		}
+		if journaldSrc != nil {
+			journaldSrc.SetLogsEmitter(logsSender.Send)
+		}
 		senders := []signal.Sender{logsSender}
 		if tracesSender != nil {
 			senders = append(senders, tracesSender)
@@ -435,6 +495,12 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			"wisp_filelog_active_files",
 			"Current number of regular files matched by filelog include/exclude patterns.",
 			func() float64 { return float64(filelogSrc.ActiveFiles()) },
+		)
+	}
+	if journaldSrc != nil {
+		checks = append(
+			checks,
+			readinessCheck{"journald", journaldSrc.Healthy},
 		)
 	}
 	p.AddExporter(exporter)
@@ -500,6 +566,31 @@ func effectiveFileLogBounds(cfg *config.FileLogSource, requestLimit int) (int, i
 		maxLine = maxBatch
 	}
 	return maxLine, maxBatch
+}
+
+func effectiveJournaldBounds(
+	cfg *config.JournaldSource,
+	requestLimit int,
+) (int, int) {
+	maxField := cfg.MaxFieldBytes
+	if maxField <= 0 {
+		maxField = 256 << 10
+	}
+	maxBatch := cfg.MaxBatchBytes
+	if maxBatch <= 0 {
+		maxBatch = 512 << 10
+	}
+	payloadLimit := requestLimit - fileLogRequestReserve
+	if payloadLimit < 8<<10 {
+		payloadLimit = 8 << 10
+	}
+	if maxBatch > payloadLimit {
+		maxBatch = payloadLimit
+	}
+	if maxField > maxBatch {
+		maxField = maxBatch
+	}
+	return maxField, maxBatch
 }
 
 func fileLogRedactionRuleCount(redaction *config.FileLogRedaction) int {
@@ -601,6 +692,9 @@ func restartRequiredChanges(current, next config.Config) []string {
 	}
 	if !reflect.DeepEqual(current.Sources.FileLog, next.Sources.FileLog) {
 		fields = append(fields, "sources.filelog")
+	}
+	if !reflect.DeepEqual(current.Sources.Journald, next.Sources.Journald) {
+		fields = append(fields, "sources.journald")
 	}
 	if !reflect.DeepEqual(current.Sources.EBPF, next.Sources.EBPF) {
 		fields = append(fields, "sources.ebpf")

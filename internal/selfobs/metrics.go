@@ -127,6 +127,46 @@ var (
 		"wisp_filelog_timestamp_errors_total",
 		"Text file log timestamp captures that were absent, malformed, or outside the OTLP range, including retried reads.",
 	)
+	JournaldRecords = newCounter(
+		"wisp_journald_records_total",
+		"Journald records durably admitted.",
+	)
+	JournaldBatches = newCounter(
+		"wisp_journald_batches_total",
+		"Journald batches durably admitted.",
+	)
+	JournaldReadErrors = newCounter(
+		"wisp_journald_read_errors_total",
+		"Journald subprocess, permission, or export parsing failures.",
+	)
+	JournaldCheckpointErrors = newCounter(
+		"wisp_journald_checkpoint_errors_total",
+		"Atomic journald cursor checkpoint writes that failed.",
+	)
+	JournaldAdmissionErrors = newCounter(
+		"wisp_journald_admission_errors_total",
+		"Journald batches downstream delivery or spool admission did not durably accept.",
+	)
+	JournaldBackpressure = newCounter(
+		"wisp_journald_backpressure_total",
+		"Journald batches paused by logs spool pressure.",
+	)
+	JournaldOversizedMessages = newCounter(
+		"wisp_journald_oversized_messages_total",
+		"Journald MESSAGE fields omitted because they exceeded max_field_bytes, including retried reads.",
+	)
+	JournaldOversizedRecords = newCounter(
+		"wisp_journald_oversized_records_total",
+		"Journald records replaced by explicit markers because their encoded record exceeded max_batch_bytes, including retried reads.",
+	)
+	JournaldRedactionMatches = newCounter(
+		"wisp_journald_redaction_matches_total",
+		"Journald MESSAGE regex matches replaced before durable admission, including retries.",
+	)
+	JournaldRedactionDropped = newCounter(
+		"wisp_journald_redaction_dropped_records_total",
+		"Journald records intentionally dropped because redaction expansion exceeded max_field_bytes.",
+	)
 )
 
 // gaugeFunc is a gauge whose current value is read from fn at scrape time.
