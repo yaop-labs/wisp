@@ -13,7 +13,9 @@ versioning without treating `v1.0.0` as a schedule target.
 - signal-neutral durability queue with per-signal depth, optional byte limits,
   pressure hysteresis, fair drain, and labelled self-observability gauges;
 - lossless OTLP Logs receive/export over gRPC and HTTP/protobuf;
-- configurable per-signal spool limits and logs receive/rejection counters.
+- configurable per-signal spool limits and logs receive/rejection counters;
+- bounded OTLP Logs splitting with independent durable chunks and stable
+  downstream delivery IDs.
 
 ### Changed
 
@@ -22,7 +24,9 @@ versioning without treating `v1.0.0` as a schedule target.
 - the metric pipeline now uses a compatibility adapter over the generic queue;
 - transient drain failures block only their signal, while permanent live
   rejections return immediately instead of consuming spool capacity;
-- OTLP Logs bypass metric-only processors and share the same durability queue.
+- OTLP Logs bypass metric-only processors and share the same durability queue;
+- log request size is automatically constrained by its spool budget; legacy
+  oversized log envelopes use compatibility splitting on export.
 
 ## v0.7.0 — 2026-07-17
 

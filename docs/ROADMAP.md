@@ -20,7 +20,8 @@ patch releases when that improves reviewability or operational safety.
 - signal-neutral queue, per-signal quotas, pressure, fair scheduling, and
   self-observability — implemented;
 - OTLP Logs receiver/exporter registration — implemented; traces remain;
-- payload splitting and permanent/transient response semantics.
+- bounded OTLP Logs splitting, stable delivery identity, and
+  permanent/transient response semantics — implemented.
 
 The design must satisfy ADR 0001 so a future `profiles` kind does not require a
 second pipeline rewrite.

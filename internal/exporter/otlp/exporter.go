@@ -73,6 +73,9 @@ type Config struct {
 	// Headers are non-auth metadata sent with every export (e.g. x-tenant).
 	// Authorization must be configured through Auth so Reef can enforce policy.
 	Headers map[string]string
+	// MaxLogRequestBytes bounds each OTLP Logs request after splitting.
+	// Zero applies the safe default.
+	MaxLogRequestBytes int
 }
 
 func New(cfg Config, logger *slog.Logger) (*Exporter, error) {

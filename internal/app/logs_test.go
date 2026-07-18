@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/yaop-labs/wisp/internal/config"
 )
@@ -19,11 +21,24 @@ import (
 type logsCollector struct {
 	collogspb.UnimplementedLogsServiceServer
 	got chan *collogspb.ExportLogsServiceRequest
+	ids chan string
 }
 
-func (c *logsCollector) Export(_ context.Context, request *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
+func (c *logsCollector) Export(ctx context.Context, request *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
+	md, _ := metadata.FromIncomingContext(ctx)
+	if c.ids != nil {
+		c.ids <- firstMetadataValue(md, "x-wisp-envelope-id")
+	}
 	c.got <- request
 	return &collogspb.ExportLogsServiceResponse{}, nil
+}
+
+func firstMetadataValue(md metadata.MD, key string) string {
+	values := md.Get(key)
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
 
 func TestAppRoutesOTLPLogsThroughSharedSpool(t *testing.T) {
@@ -31,7 +46,10 @@ func TestAppRoutesOTLPLogsThroughSharedSpool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	collector := &logsCollector{got: make(chan *collogspb.ExportLogsServiceRequest, 1)}
+	collector := &logsCollector{
+		got: make(chan *collogspb.ExportLogsServiceRequest, 1),
+		ids: make(chan string, 1),
+	}
 	server := grpc.NewServer()
 	collogspb.RegisterLogsServiceServer(server, collector)
 	go func() { _ = server.Serve(listener) }()
@@ -102,11 +120,37 @@ resource:
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for downstream logs")
 	}
+	select {
+	case id := <-collector.ids:
+		if decoded, err := hex.DecodeString(id); err != nil || len(decoded) != 16 {
+			t.Fatalf("delivery envelope id=%q, want 32 hex chars", id)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for delivery metadata")
+	}
 
 	cancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer shutdownCancel()
 	if err := application.Shutdown(shutdownCtx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEffectiveLogRequestBytesFitsSpoolBudgets(t *testing.T) {
+	cfg := config.Config{}
+	if got := effectiveLogRequestBytes(cfg); got != 3<<20 {
+		t.Fatalf("default=%d, want 3MiB", got)
+	}
+	cfg.Exporter.Spool.Dir = "/spool"
+	cfg.Exporter.Spool.MaxBytes = 1 << 20
+	if got := effectiveLogRequestBytes(cfg); got != 768<<10 {
+		t.Fatalf("global cap result=%d, want 768KiB", got)
+	}
+	cfg.Exporter.Spool.SignalLimits = map[string]config.SpoolSignalLimit{
+		"logs": {MaxBytes: 512 << 10},
+	}
+	if got := effectiveLogRequestBytes(cfg); got != 256<<10 {
+		t.Fatalf("logs cap result=%d, want 256KiB", got)
 	}
 }

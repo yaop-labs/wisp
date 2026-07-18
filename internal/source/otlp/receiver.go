@@ -29,12 +29,13 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 
 	"github.com/yaop-labs/wisp/internal/model"
+	"github.com/yaop-labs/wisp/internal/otlpwire"
 	"github.com/yaop-labs/wisp/internal/pipeline"
 	"github.com/yaop-labs/wisp/internal/selfobs"
 	"github.com/yaop-labs/wisp/internal/signal"
 )
 
-const maxBodyBytes = 16 << 20
+const maxBodyBytes = otlpwire.MaxReceiverRequestBytes
 
 // Options configures a Receiver. Empty GRPCAddr/HTTPAddr disable that transport;
 // a non-nil TLS secures both (mTLS when it requires client certs); non-empty
@@ -46,6 +47,7 @@ type Options struct {
 	Auth                           *bearer.ServerConfig
 	Insecure                       bool
 	DangerAllowBearerOverPlaintext bool
+	MaxLogRequestBytes             int
 }
 
 // Receiver serves OTLP metrics over gRPC and/or HTTP.
@@ -64,7 +66,8 @@ type Receiver struct {
 	emit func(context.Context, model.Batch) error
 	// logsEmit bypasses metric processors and preserves the OTLP protobuf as an
 	// opaque durable envelope.
-	logsEmit func(context.Context, signal.Envelope) error
+	logsEmit           func(context.Context, signal.Envelope) error
+	maxLogRequestBytes int
 
 	grpcSrv *grpc.Server
 	httpSrv *http.Server
@@ -128,7 +131,15 @@ func New(opts Options, logger *slog.Logger) (*Receiver, error) {
 		secure: opts.TLS != nil && opts.TLS.Enabled, logger: logger,
 		grpcOpts: grpcOpts, httpMiddleware: httpMiddleware,
 		grpcEdge: grpcEdge, httpEdge: httpEdge, ready: make(chan struct{}),
+		maxLogRequestBytes: normalizedLogRequestBytes(opts.MaxLogRequestBytes),
 	}, nil
+}
+
+func normalizedLogRequestBytes(value int) int {
+	if value <= 0 {
+		return otlpwire.DefaultMaxRequestBytes
+	}
+	return value
 }
 
 func logWarnings(logger *slog.Logger, edgeName string, warnings []edge.Warning) {
@@ -199,26 +210,41 @@ func (r *Receiver) ingestLogs(ctx context.Context, request *collogspb.ExportLogs
 	if r.logsEmit == nil {
 		return fmt.Errorf("%w: OTLP Logs capability is disabled", pipeline.ErrPermanent)
 	}
-	records := logRecordCount(request)
+	records := otlpwire.LogRecordCount(request)
 	if records == 0 {
 		return nil
 	}
-	payload, err := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
-	if err != nil {
-		return fmt.Errorf("%w: encode OTLP Logs: %v", pipeline.ErrPermanent, err)
+	maxRequestBytes := normalizedLogRequestBytes(r.maxLogRequestBytes)
+	if proto.Size(request) > maxRequestBytes {
+		selfobs.OTLPLogsSplitRequests.Inc()
 	}
-	envelope, err := signal.New(
-		signal.Logs, signal.OTLPLogsSchema, signal.OTLPProtobufEncoding,
-		payload, commonLogsResource(request),
+	err := otlpwire.ForEachLogsChunk(
+		request,
+		maxRequestBytes,
+		func(chunk otlpwire.LogsChunk) error {
+			payload, err := (proto.MarshalOptions{Deterministic: true}).Marshal(chunk.Request)
+			if err != nil {
+				return fmt.Errorf("%w: encode OTLP Logs: %v", pipeline.ErrPermanent, err)
+			}
+			envelope, err := signal.New(
+				signal.Logs, signal.OTLPLogsSchema, signal.OTLPProtobufEncoding,
+				payload, commonLogsResource(chunk.Request),
+			)
+			if err != nil {
+				return err
+			}
+			if err := r.logsEmit(ctx, envelope); err != nil {
+				return err
+			}
+			selfobs.OTLPLogsReceived.Add(uint64(chunk.Records))
+			selfobs.OTLPLogsChunks.Inc()
+			return nil
+		},
 	)
-	if err != nil {
-		return err
+	if errors.Is(err, otlpwire.ErrLogRecordTooLarge) {
+		return fmt.Errorf("%w: %w", pipeline.ErrPermanent, err)
 	}
-	if err := r.logsEmit(ctx, envelope); err != nil {
-		return err
-	}
-	selfobs.OTLPLogsReceived.Add(uint64(records))
-	return nil
+	return err
 }
 
 func commonLogsResource(request *collogspb.ExportLogsServiceRequest) map[string]string {
@@ -257,22 +283,6 @@ func commonLogsResource(request *collogspb.ExportLogsServiceRequest) map[string]
 		}
 	}
 	return common
-}
-
-func logRecordCount(request *collogspb.ExportLogsServiceRequest) int {
-	count := 0
-	for _, resource := range request.ResourceLogs {
-		if resource == nil {
-			continue
-		}
-		for _, scope := range resource.ScopeLogs {
-			if scope == nil {
-				continue
-			}
-			count += len(scope.LogRecords)
-		}
-	}
-	return count
 }
 
 // Stop gracefully shuts the servers down.
@@ -422,6 +432,8 @@ func (r *Receiver) handleLogsHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		case errors.Is(err, pipeline.ErrBackpressure):
 			http.Error(w, "wisp backpressure: logs spool above high-water mark", http.StatusTooManyRequests)
+		case errors.Is(err, otlpwire.ErrLogRecordTooLarge):
+			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 		case errors.Is(err, pipeline.ErrPermanent):
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		default:

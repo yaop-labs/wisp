@@ -3,6 +3,9 @@ package otlp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,22 +24,24 @@ import (
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 
 	"github.com/yaop-labs/wisp/internal/httpx"
+	"github.com/yaop-labs/wisp/internal/otlpwire"
 	"github.com/yaop-labs/wisp/internal/pipeline"
 	"github.com/yaop-labs/wisp/internal/selfobs"
 	"github.com/yaop-labs/wisp/internal/signal"
 )
 
 type logsTransport interface {
-	sendLogs(context.Context, *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error)
+	sendLogs(context.Context, *collogspb.ExportLogsServiceRequest, string) (*collogspb.ExportLogsServiceResponse, error)
 	close() error
 }
 
 // LogsExporter forwards opaque OTLP Logs envelopes without converting log
 // records into Wisp's metric model.
 type LogsExporter struct {
-	tr      logsTransport
-	timeout time.Duration
-	logger  *slog.Logger
+	tr              logsTransport
+	timeout         time.Duration
+	logger          *slog.Logger
+	maxRequestBytes int
 }
 
 func NewLogs(cfg Config, logger *slog.Logger) (*LogsExporter, error) {
@@ -48,6 +53,11 @@ func NewLogs(cfg Config, logger *slog.Logger) (*LogsExporter, error) {
 	}
 	if hasHeader(cfg.Headers, "authorization") {
 		return nil, fmt.Errorf("otlp logs exporter: configure bearer credentials via auth, not headers.authorization")
+	}
+	for _, reserved := range []string{"x-wisp-envelope-id", "x-wisp-signal-kind"} {
+		if hasHeader(cfg.Headers, reserved) {
+			return nil, fmt.Errorf("otlp logs exporter: header %q is reserved", reserved)
+		}
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -100,7 +110,10 @@ func NewLogs(cfg Config, logger *slog.Logger) (*LogsExporter, error) {
 	for _, warning := range warnings {
 		logger.Warn("reef configuration warning", "edge", "otlp-logs-exporter", "warning", warning)
 	}
-	return &LogsExporter{tr: tr, timeout: timeout, logger: logger}, nil
+	return &LogsExporter{
+		tr: tr, timeout: timeout, logger: logger,
+		maxRequestBytes: normalizedMaxLogRequestBytes(cfg.MaxLogRequestBytes),
+	}, nil
 }
 
 func (e *LogsExporter) Send(ctx context.Context, envelope signal.Envelope) error {
@@ -117,16 +130,36 @@ func (e *LogsExporter) Send(ctx context.Context, envelope signal.Envelope) error
 
 	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
-	response, err := e.tr.sendLogs(ctx, &request)
+	maxRequestBytes := normalizedMaxLogRequestBytes(e.maxRequestBytes)
+	split := proto.Size(&request) > maxRequestBytes
+	if split {
+		selfobs.OTLPLogsCompatSplits.Inc()
+	}
+	err := otlpwire.ForEachLogsChunk(&request, maxRequestBytes, func(chunk otlpwire.LogsChunk) error {
+		deliveryID := envelope.ID
+		if split {
+			deliveryID = derivedChunkID(envelope.ID, chunk.Index)
+		}
+		response, err := e.tr.sendLogs(ctx, chunk.Request, deliveryID)
+		if err != nil {
+			return err
+		}
+		if partial := response.GetPartialSuccess(); partial != nil && partial.RejectedLogRecords > 0 {
+			selfobs.OTLPLogsRejected.Add(uint64(partial.RejectedLogRecords))
+			e.logger.Warn("otlp logs downstream partial success",
+				"rejected_log_records", partial.RejectedLogRecords,
+				"message", boundedLogText(partial.ErrorMessage, 1024),
+				"envelope_id", deliveryID)
+		}
+		selfobs.OTLPLogsChunksExported.Inc()
+		return nil
+	})
 	if err != nil {
 		selfobs.ExportFailures.Inc()
+		if errors.Is(err, otlpwire.ErrLogRecordTooLarge) {
+			return fmt.Errorf("otlp logs export: %w: %w", pipeline.ErrPermanent, err)
+		}
 		return fmt.Errorf("otlp logs export: %w", err)
-	}
-	if partial := response.GetPartialSuccess(); partial != nil && partial.RejectedLogRecords > 0 {
-		selfobs.OTLPLogsRejected.Add(uint64(partial.RejectedLogRecords))
-		e.logger.Warn("otlp logs downstream partial success",
-			"rejected_log_records", partial.RejectedLogRecords,
-			"message", boundedLogText(partial.ErrorMessage, 1024))
 	}
 	selfobs.BatchesExported.Inc()
 	return nil
@@ -140,10 +173,14 @@ type grpcLogsTransport struct {
 	md     metadata.MD
 }
 
-func (t *grpcLogsTransport) sendLogs(ctx context.Context, request *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
-	if len(t.md) > 0 {
-		ctx = metadata.NewOutgoingContext(ctx, t.md)
+func (t *grpcLogsTransport) sendLogs(ctx context.Context, request *collogspb.ExportLogsServiceRequest, envelopeID string) (*collogspb.ExportLogsServiceResponse, error) {
+	md := t.md.Copy()
+	if md == nil {
+		md = metadata.MD{}
 	}
+	md.Set("x-wisp-envelope-id", envelopeID)
+	md.Set("x-wisp-signal-kind", string(signal.Logs))
+	ctx = metadata.NewOutgoingContext(ctx, md)
 	response, err := t.client.Export(ctx, request)
 	if err != nil && permanentGRPC(status.Code(err)) {
 		return nil, fmt.Errorf("%w: %w", pipeline.ErrPermanent, err)
@@ -160,7 +197,7 @@ type httpLogsTransport struct {
 	headers map[string]string
 }
 
-func (t *httpLogsTransport) sendLogs(ctx context.Context, request *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
+func (t *httpLogsTransport) sendLogs(ctx context.Context, request *collogspb.ExportLogsServiceRequest, envelopeID string) (*collogspb.ExportLogsServiceResponse, error) {
 	body, err := proto.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("%w: marshal logs: %v", pipeline.ErrPermanent, err)
@@ -173,6 +210,8 @@ func (t *httpLogsTransport) sendLogs(ctx context.Context, request *collogspb.Exp
 	for _, key := range sortedKeys(t.headers) {
 		httpReq.Header.Set(key, t.headers[key])
 	}
+	httpReq.Header.Set("X-Wisp-Envelope-Id", envelopeID)
+	httpReq.Header.Set("X-Wisp-Signal-Kind", string(signal.Logs))
 	response, err := t.client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("post: %w", err)
@@ -225,4 +264,16 @@ func boundedLogText(value string, maxBytes int) string {
 		value = value[:len(value)-1]
 	}
 	return value + "…"
+}
+
+func normalizedMaxLogRequestBytes(value int) int {
+	if value <= 0 {
+		return otlpwire.DefaultMaxRequestBytes
+	}
+	return value
+}
+
+func derivedChunkID(envelopeID string, index int) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", envelopeID, index)))
+	return hex.EncodeToString(sum[:16])
 }

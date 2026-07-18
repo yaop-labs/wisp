@@ -79,6 +79,7 @@ exporter:
     endpoint: "127.0.0.1:4317" # collector OTLP gRPC (or amber directly in v0)
     protocol: grpc
     timeout: 5s
+    max_log_request_bytes: 3145728 # split logs below common 4 MiB receiver limits
     # tls:                      # verify the collector; supply a client cert for mTLS
     #   enabled: true
     #   ca_file: /etc/wisp/ca.crt

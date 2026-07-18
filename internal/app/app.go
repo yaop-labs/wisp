@@ -23,6 +23,7 @@ import (
 	"github.com/yaop-labs/wisp/internal/exporter/signalrouter"
 	spoolexp "github.com/yaop-labs/wisp/internal/exporter/spool"
 	"github.com/yaop-labs/wisp/internal/model"
+	"github.com/yaop-labs/wisp/internal/otlpwire"
 	"github.com/yaop-labs/wisp/internal/pipeline"
 	"github.com/yaop-labs/wisp/internal/processor/cardinality"
 	"github.com/yaop-labs/wisp/internal/processor/relabel"
@@ -92,6 +93,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 
 	p := pipeline.New(pipeline.Config{}, logger)
 	resource := buildResource(cfg.Resource, logger)
+	logRequestBytes := effectiveLogRequestBytes(cfg)
 
 	// Source registry: one entry per source type (name for logs, presence gate,
 	// and constructor). Adding a source is one entry here plus its config field
@@ -129,6 +131,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				Auth:                           oc.Auth,
 				Insecure:                       oc.Insecure,
 				DangerAllowBearerOverPlaintext: oc.DangerAllowBearerOverPlaintext,
+				MaxLogRequestBytes:             logRequestBytes,
 			}, logger)
 			otlpRecv = receiver
 			return receiver, err
@@ -199,12 +202,15 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			Insecure:                       cfg.Exporter.OTLP.Insecure,
 			DangerAllowBearerOverPlaintext: cfg.Exporter.OTLP.DangerAllowBearerOverPlaintext,
 			Headers:                        cfg.Exporter.OTLP.Headers,
+			MaxLogRequestBytes:             logRequestBytes,
 		}, logger)
 		if logsErr != nil {
 			_ = exporter.Close()
 			return nil, logsErr
 		}
 		logsSender = retryexp.WrapSender(logsExporter, retryConfig)
+		logger.Info("otlp logs request splitting configured",
+			"max_request_bytes", logRequestBytes)
 	}
 	var checks []readinessCheck
 	if cfg.Exporter.Spool.Dir != "" {
@@ -307,6 +313,35 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		checks:       checks,
 		config:       cfg,
 	}, nil
+}
+
+const envelopeMetadataReserve = 256 << 10
+
+func effectiveLogRequestBytes(cfg config.Config) int {
+	limit := cfg.Exporter.OTLP.MaxLogRequestBytes
+	if limit <= 0 {
+		limit = otlpwire.DefaultMaxRequestBytes
+	}
+	if cfg.Exporter.Spool.Dir == "" {
+		return limit
+	}
+	caps := []int64{cfg.Exporter.Spool.MaxBytes}
+	if logs, ok := cfg.Exporter.Spool.SignalLimits[string(signal.Logs)]; ok {
+		caps = append(caps, logs.MaxBytes)
+	}
+	for _, capBytes := range caps {
+		if capBytes <= 0 {
+			continue
+		}
+		candidate := capBytes - envelopeMetadataReserve
+		if candidate <= 0 {
+			candidate = capBytes / 2
+		}
+		if candidate > 0 && candidate < int64(limit) {
+			limit = int(candidate)
+		}
+	}
+	return limit
 }
 
 type exporterWithSignalClose struct {
