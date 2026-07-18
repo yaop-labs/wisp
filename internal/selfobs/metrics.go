@@ -103,6 +103,46 @@ var (
 		"wisp_filelog_kubernetes_enrichment_misses_total",
 		"File log records durably admitted without path-derived Kubernetes attributes while enrichment was enabled.",
 	)
+	FileLogKubernetesAPICacheHits = newCounter(
+		"wisp_filelog_kubernetes_api_cache_hits_total",
+		"Kubernetes API metadata cache hits.",
+	)
+	FileLogKubernetesAPICacheMisses = newCounter(
+		"wisp_filelog_kubernetes_api_cache_misses_total",
+		"Kubernetes API metadata cache misses.",
+	)
+	FileLogKubernetesAPIStaleHits = newCounter(
+		"wisp_filelog_kubernetes_api_stale_hits_total",
+		"Stale Kubernetes API metadata used while an asynchronous refresh was scheduled.",
+	)
+	FileLogKubernetesAPIRefreshes = newCounter(
+		"wisp_filelog_kubernetes_api_refreshes_total",
+		"Successful Kubernetes API pod metadata refreshes.",
+	)
+	FileLogKubernetesAPIEnriched = newCounter(
+		"wisp_filelog_kubernetes_api_enriched_records_total",
+		"File log records durably admitted with metadata from the Kubernetes API cache.",
+	)
+	FileLogKubernetesAPIErrors = newCounter(
+		"wisp_filelog_kubernetes_api_errors_total",
+		"Failed Kubernetes API pod metadata refreshes.",
+	)
+	FileLogKubernetesAPIOwnerErrors = newCounter(
+		"wisp_filelog_kubernetes_api_owner_errors_total",
+		"Failed optional Kubernetes workload-owner lookups.",
+	)
+	FileLogKubernetesAPIUIDMismatches = newCounter(
+		"wisp_filelog_kubernetes_api_uid_mismatches_total",
+		"Kubernetes API pod responses rejected because UID did not match the log path.",
+	)
+	FileLogKubernetesAPIQueueDrops = newCounter(
+		"wisp_filelog_kubernetes_api_queue_drops_total",
+		"Kubernetes API refresh requests not scheduled because the bounded queue was full.",
+	)
+	FileLogKubernetesAPIEvictions = newCounter(
+		"wisp_filelog_kubernetes_api_evictions_total",
+		"Kubernetes API cache entries evicted at the configured pod bound.",
+	)
 	FileLogRedactionMatches = newCounter(
 		"wisp_filelog_redaction_matches_total",
 		"File log content regex matches replaced before durable admission, including retried reads.",

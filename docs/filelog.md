@@ -232,16 +232,94 @@ also participate in the durable envelope's bounded string identity, except
 for the integer restart count.
 
 Wisp does not infer `service.name`, cluster, node, workload owner, labels,
-annotations, image, or container runtime identity from a filename. Those
-values require explicit configuration or a later Kubernetes API enrichment
-stage. An unrecognized or unsafe path does not drop the log; Wisp retains the
-base resource and increments the enrichment-miss counter.
+annotations, image, or container runtime identity from a filename. An
+unrecognized or unsafe path does not drop the log; Wisp retains the base
+resource and increments the enrichment-miss counter.
 
 The attribute names follow the
 [OpenTelemetry Kubernetes resource semantic conventions](https://opentelemetry.io/docs/specs/semconv/resource/k8s/).
 Kubernetes documents `/var/log/pods` as the default and permits a custom
 `podLogsDir`; operators must set `pod_logs_root` to the path visible inside
 Wisp.
+
+#### Optional Kubernetes API enrichment
+
+An `api` block adds metadata that cannot be derived safely from the log path:
+
+```yaml
+sources:
+  filelog:
+    format: cri
+    kubernetes:
+      pod_logs_root: /var/log/pods
+      api:
+        timeout: 2s
+        cache_ttl: 5m
+        stale_after: 1h
+        failure_retry: 30s
+        max_pods: 10000
+        workers: 2
+        labels:
+          - app.kubernetes.io/name
+          - app.kubernetes.io/version
+```
+
+Wisp uses the in-cluster API endpoint, projected service-account token, and
+cluster CA. Token content is reread for every request so projected-token
+rotation does not require an agent restart. Enabling the block is explicit:
+missing in-cluster environment, token, or CA fails startup instead of silently
+pretending enrichment is active.
+
+Runtime enrichment is fail-open and asynchronous. A new pod log immediately
+uses its path-derived identity and schedules a bounded metadata GET; no API
+request runs in the file read/admission path. The first records from a newly
+seen or very short-lived pod can therefore contain only path metadata.
+Subsequent records use the cache. API outages never pause or drop logs.
+
+The cache is keyed by path-derived Pod UID. A Pod response is accepted only
+when its UID exactly matches the log path, preventing a reused namespace/name
+from contaminating rotated logs. Fresh values are used for `cache_ttl`.
+Refresh failures retain the last value only until `stale_after`; failed
+lookups are retried after `failure_retry`. The cache, worker count, request
+duration, response body, token file, label count, and refresh queue are all
+bounded. `max_pods` uses least-recently-used-time eviction. Records using a
+stale cache entry carry `wisp.kubernetes.api.stale=true`.
+
+Successful lookups may add:
+
+- `k8s.node.name`;
+- direct workload identity: `k8s.replicaset.name`,
+  `k8s.statefulset.name`, `k8s.daemonset.name`, or `k8s.job.name`;
+- `k8s.deployment.name` after a ReplicaSet owner lookup;
+- `k8s.cronjob.name` after a Job owner lookup;
+- `container.id`, `container.image.name`, `container.image.id`, and
+  `oci.manifest.digest` for regular, init, or ephemeral containers;
+- only explicitly allowlisted labels as `k8s.pod.label.<original key>`.
+
+Annotations and arbitrary labels are deliberately not copied: both are common
+credential/privacy and cardinality surfaces. API metadata augments but never
+overrides path-derived namespace, pod UID/name, container name, or restart
+count; it does override less-specific conflicting global resource values.
+
+Minimum namespace-wide RBAC for full workload resolution is:
+
+```yaml
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get"]
+```
+
+The ReplicaSet and Job permissions are optional; without them Pod, node,
+container, label, and direct owner metadata still works, while owner lookup
+errors remain observable. Scope Role bindings to the namespaces whose pod log
+directories Wisp reads.
 
 ## Durability and duplicate boundary
 
@@ -335,6 +413,17 @@ Self-observability includes:
 - `wisp_filelog_cri_partial_records_total`;
 - `wisp_filelog_kubernetes_enriched_records_total`;
 - `wisp_filelog_kubernetes_enrichment_misses_total`;
+- `wisp_filelog_kubernetes_api_cache_entries`;
+- `wisp_filelog_kubernetes_api_cache_hits_total`,
+  `wisp_filelog_kubernetes_api_cache_misses_total`, and
+  `wisp_filelog_kubernetes_api_stale_hits_total`;
+- `wisp_filelog_kubernetes_api_refreshes_total`,
+  `wisp_filelog_kubernetes_api_errors_total`, and
+  `wisp_filelog_kubernetes_api_owner_errors_total`;
+- `wisp_filelog_kubernetes_api_enriched_records_total`;
+- `wisp_filelog_kubernetes_api_uid_mismatches_total`;
+- `wisp_filelog_kubernetes_api_queue_drops_total` and
+  `wisp_filelog_kubernetes_api_evictions_total`;
 - `wisp_filelog_redaction_matches_total`;
 - `wisp_filelog_redaction_dropped_records_total`;
 - `wisp_filelog_multiline_forced_flushes_total`;
@@ -342,5 +431,5 @@ Self-observability includes:
 - `wisp_filelog_timestamp_parsed_total`;
 - `wisp_filelog_timestamp_errors_total`.
 
-API-backed Kubernetes metadata enrichment and journald collection remain
-separate increments.
+All filelog collection features are opt-in where they expand privileges,
+content inspection, or metadata cardinality.

@@ -43,7 +43,8 @@ second pipeline rewrite.
   implemented;
 - bounded journald export collection with durable cursors, redaction, filters,
   explicit oversized-message policy, and readiness semantics — implemented;
-- optional API-backed Kubernetes workload, node, label, and image enrichment;
+- optional fail-open, UID-verified, bounded API-backed Kubernetes workload,
+  node, allowlisted-label, and container image enrichment — implemented;
 - documented at-least-once behavior and duplicate boundary.
 
 ## v0.10.x — trace processing depth

@@ -145,7 +145,19 @@ type FileLogSource struct {
 
 // FileLogKubernetes enables resource enrichment from kubelet's pod log path.
 type FileLogKubernetes struct {
-	PodLogsRoot string `yaml:"pod_logs_root"`
+	PodLogsRoot string                `yaml:"pod_logs_root"`
+	API         *FileLogKubernetesAPI `yaml:"api"`
+}
+
+// FileLogKubernetesAPI enables fail-open in-cluster metadata enrichment.
+type FileLogKubernetesAPI struct {
+	Timeout      Duration `yaml:"timeout"`
+	CacheTTL     Duration `yaml:"cache_ttl"`
+	StaleAfter   Duration `yaml:"stale_after"`
+	FailureRetry Duration `yaml:"failure_retry"`
+	MaxPods      int      `yaml:"max_pods"`
+	Workers      int      `yaml:"workers"`
+	Labels       []string `yaml:"labels"`
 }
 
 // FileLogRedaction replaces regex matches before logs enter durable storage.
@@ -384,6 +396,85 @@ func (c *Config) Validate() error {
 			root := f.Kubernetes.PodLogsRoot
 			if root != "" && (!filepath.IsAbs(root) || filepath.Clean(root) == string(filepath.Separator)) {
 				return fmt.Errorf("sources.filelog.kubernetes.pod_logs_root must be an absolute non-root path")
+			}
+			if api := f.Kubernetes.API; api != nil {
+				timeout := api.Timeout.Std()
+				if timeout != 0 &&
+					(timeout < 100*time.Millisecond || timeout > 30*time.Second) {
+					return fmt.Errorf(
+						"sources.filelog.kubernetes.api.timeout must be between 100ms and 30s",
+					)
+				}
+				cacheTTL := api.CacheTTL.Std()
+				if cacheTTL != 0 &&
+					(cacheTTL < time.Second || cacheTTL > 24*time.Hour) {
+					return fmt.Errorf(
+						"sources.filelog.kubernetes.api.cache_ttl must be between 1s and 24h",
+					)
+				}
+				staleAfter := api.StaleAfter.Std()
+				if staleAfter != 0 &&
+					(staleAfter < time.Second ||
+						staleAfter > 7*24*time.Hour) {
+					return fmt.Errorf(
+						"sources.filelog.kubernetes.api.stale_after must be between 1s and 168h",
+					)
+				}
+				effectiveTTL := cacheTTL
+				if effectiveTTL == 0 {
+					effectiveTTL = 5 * time.Minute
+				}
+				effectiveStale := staleAfter
+				if effectiveStale == 0 {
+					effectiveStale = time.Hour
+				}
+				if effectiveStale < effectiveTTL {
+					return fmt.Errorf(
+						"sources.filelog.kubernetes.api.stale_after must not be below cache_ttl",
+					)
+				}
+				failureRetry := api.FailureRetry.Std()
+				if failureRetry != 0 &&
+					(failureRetry < time.Second ||
+						failureRetry > time.Hour) {
+					return fmt.Errorf(
+						"sources.filelog.kubernetes.api.failure_retry must be between 1s and 1h",
+					)
+				}
+				if api.MaxPods < 0 || api.MaxPods > 100_000 {
+					return fmt.Errorf(
+						"sources.filelog.kubernetes.api.max_pods must be between 1 and 100000",
+					)
+				}
+				if api.Workers < 0 || api.Workers > 16 {
+					return fmt.Errorf(
+						"sources.filelog.kubernetes.api.workers must be between 1 and 16",
+					)
+				}
+				if len(api.Labels) > 32 {
+					return fmt.Errorf(
+						"sources.filelog.kubernetes.api.labels supports at most 32 keys",
+					)
+				}
+				seenLabels := make(map[string]struct{}, len(api.Labels))
+				for index, label := range api.Labels {
+					if label == "" || len(label) > 253 ||
+						!utf8.ValidString(label) ||
+						strings.IndexFunc(label, unicode.IsControl) >= 0 ||
+						!validKubernetesLabelKey(label) {
+						return fmt.Errorf(
+							"sources.filelog.kubernetes.api.labels[%d] must be a valid Kubernetes label key",
+							index,
+						)
+					}
+					if _, exists := seenLabels[label]; exists {
+						return fmt.Errorf(
+							"sources.filelog.kubernetes.api.labels contains duplicate %q",
+							label,
+						)
+					}
+					seenLabels[label] = struct{}{}
+				}
 			}
 		}
 		if f.Redaction != nil {
@@ -672,3 +763,56 @@ func (s SourcesConfig) Enabled() []string {
 
 // AnyEnabled reports whether at least one source is configured.
 func (s SourcesConfig) AnyEnabled() bool { return len(s.Enabled()) > 0 }
+
+func validKubernetesLabelKey(value string) bool {
+	if strings.Count(value, "/") > 1 {
+		return false
+	}
+	prefix, name, qualified := strings.Cut(value, "/")
+	if !qualified {
+		name = prefix
+		prefix = ""
+	}
+	if name == "" || len(name) > 63 ||
+		!asciiKubernetesNameEdge(name[0]) ||
+		!asciiKubernetesNameEdge(name[len(name)-1]) {
+		return false
+	}
+	for index := 1; index < len(name)-1; index++ {
+		value := name[index]
+		if !asciiKubernetesNameEdge(value) &&
+			value != '-' && value != '_' && value != '.' {
+			return false
+		}
+	}
+	if prefix == "" {
+		return true
+	}
+	if len(prefix) > 253 {
+		return false
+	}
+	for label := range strings.SplitSeq(prefix, ".") {
+		if label == "" || len(label) > 63 ||
+			!asciiLowercaseOrDigit(label[0]) ||
+			!asciiLowercaseOrDigit(label[len(label)-1]) {
+			return false
+		}
+		for index := 1; index < len(label)-1; index++ {
+			if !asciiLowercaseOrDigit(label[index]) &&
+				label[index] != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func asciiKubernetesNameEdge(value byte) bool {
+	return asciiLowercaseOrDigit(value) ||
+		value >= 'A' && value <= 'Z'
+}
+
+func asciiLowercaseOrDigit(value byte) bool {
+	return value >= 'a' && value <= 'z' ||
+		value >= '0' && value <= '9'
+}

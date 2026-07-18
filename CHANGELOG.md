@@ -39,6 +39,10 @@ versioning without treating `v1.0.0` as a schedule target.
   durable cursors, start boundaries, unit/identifier filters, syslog severity
   mapping, pre-spool redaction, explicit oversized-message markers, and
   readiness/self-observability coverage.
+- optional fail-open Kubernetes API enrichment for CRI file logs with
+  UID-verified bounded asynchronous caching, stale/failure policy, workload
+  owner resolution, node/container image identity, label allowlists, projected
+  token rotation, and explicit RBAC.
 
 ### Changed
 

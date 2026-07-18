@@ -62,6 +62,7 @@ type Config struct {
 
 type KubernetesConfig struct {
 	PodLogsRoot string
+	API         *KubernetesAPIConfig
 }
 
 type RedactionConfig struct {
@@ -81,13 +82,14 @@ type TimestampConfig struct {
 }
 
 type Source struct {
-	cfg       Config
-	logger    *slog.Logger
-	store     *checkpointStore
-	redactor  *contentRedactor
-	multiline *multilineFramer
-	timestamp *timestampParser
-	emit      func(context.Context, signal.Envelope) error
+	cfg           Config
+	logger        *slog.Logger
+	store         *checkpointStore
+	redactor      *contentRedactor
+	multiline     *multilineFramer
+	timestamp     *timestampParser
+	kubernetesAPI *kubernetesAPIResolver
+	emit          func(context.Context, signal.Envelope) error
 
 	healthMu  sync.RWMutex
 	healthErr error
@@ -162,6 +164,13 @@ func New(cfg Config, logger *slog.Logger) (*Source, error) {
 		}
 		cfg.Kubernetes.PodLogsRoot = root
 	}
+	var kubernetesAPI *kubernetesAPIResolver
+	if cfg.Kubernetes != nil {
+		kubernetesAPI, err = newKubernetesAPIResolver(cfg.Kubernetes.API)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if cfg.MaxLineBytes < 1 || cfg.MaxBatchBytes < cfg.MaxLineBytes ||
 		cfg.MaxReadBytes < int64(cfg.MaxBatchBytes) {
 		return nil, fmt.Errorf("filelog: invalid line, batch, or read bounds")
@@ -187,6 +196,7 @@ func New(cfg Config, logger *slog.Logger) (*Source, error) {
 	return &Source{
 		cfg: cfg, logger: logger, store: store, redactor: redactor,
 		multiline: multiline, timestamp: timestamp,
+		kubernetesAPI: kubernetesAPI,
 	}, nil
 }
 
@@ -212,6 +222,7 @@ func (s *Source) Start(ctx context.Context, _ func(context.Context, model.Batch)
 	if s.emit == nil {
 		return fmt.Errorf("filelog: logs emitter is not configured")
 	}
+	s.kubernetesAPI.start(ctx)
 	ticker := time.NewTicker(s.cfg.PollInterval)
 	defer ticker.Stop()
 	s.poll(ctx)
@@ -225,7 +236,10 @@ func (s *Source) Start(ctx context.Context, _ func(context.Context, model.Batch)
 	}
 }
 
-func (*Source) Stop(context.Context) error { return nil }
+func (s *Source) Stop(context.Context) error {
+	s.kubernetesAPI.close()
+	return nil
+}
 
 func (s *Source) Healthy() error {
 	s.healthMu.RLock()
@@ -234,6 +248,10 @@ func (s *Source) Healthy() error {
 }
 
 func (s *Source) ActiveFiles() int64 { return s.active.Load() }
+
+func (s *Source) KubernetesAPICacheEntries() int {
+	return s.kubernetesAPI.size()
+}
 
 func (s *Source) setHealth(err error) {
 	s.healthMu.Lock()
@@ -622,7 +640,7 @@ func (s *Source) emitRecords(
 	path string,
 	records []*logspb.LogRecord,
 ) error {
-	resource, identityAttributes, enriched := s.resourceForPath(path)
+	resource, identityAttributes, enriched, apiEnriched := s.resourceForPath(path)
 	request := &collogspb.ExportLogsServiceRequest{
 		ResourceLogs: []*logspb.ResourceLogs{{
 			Resource: resource,
@@ -660,13 +678,16 @@ func (s *Source) emitRecords(
 		} else {
 			selfobs.FileLogKubernetesMisses.Add(uint64(len(records)))
 		}
+		if apiEnriched {
+			selfobs.FileLogKubernetesAPIEnriched.Add(uint64(len(records)))
+		}
 	}
 	return nil
 }
 
 func (s *Source) resourceForPath(
 	path string,
-) (*resourcepb.Resource, map[string]string, bool) {
+) (*resourcepb.Resource, map[string]string, bool, bool) {
 	stringValues := maps.Clone(s.cfg.Resource)
 	if stringValues == nil {
 		stringValues = make(map[string]string)
@@ -678,6 +699,7 @@ func (s *Source) resourceForPath(
 		}
 	}
 	enriched := false
+	apiEnriched := false
 	if s.cfg.Kubernetes != nil {
 		metadata, ok := parseKubernetesPodLogPath(
 			s.cfg.Kubernetes.PodLogsRoot,
@@ -703,6 +725,13 @@ func (s *Source) resourceForPath(
 					IntValue: metadata.restartCount,
 				},
 			}
+			for key, value := range s.kubernetesAPI.lookup(metadata) {
+				apiEnriched = true
+				stringValues[key] = value
+				values[key] = &commonpb.AnyValue{
+					Value: &commonpb.AnyValue_StringValue{StringValue: value},
+				}
+			}
 		}
 	}
 	resource := &resourcepb.Resource{}
@@ -717,7 +746,7 @@ func (s *Source) resourceForPath(
 			Value: values[key],
 		})
 	}
-	return resource, stringValues, enriched
+	return resource, stringValues, enriched, apiEnriched
 }
 
 func (s *Source) persistCheckpoint() error {

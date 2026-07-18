@@ -34,10 +34,10 @@ func parseKubernetesPodLogPath(root, path string) (kubernetesPathMetadata, bool)
 	}
 	podParts := strings.Split(parts[0], "_")
 	if len(podParts) != 3 ||
-		!validDNSLabel(podParts[0], maxKubernetesNamespaceBytes) ||
-		!validDNSSubdomain(podParts[1], maxKubernetesNameBytes) ||
+		!validDNSLabel(podParts[0]) ||
+		!validDNSSubdomain(podParts[1]) ||
 		!validKubernetesUID(podParts[2]) ||
-		!validDNSLabel(parts[1], maxKubernetesNamespaceBytes) {
+		!validDNSLabel(parts[1]) {
 		return kubernetesPathMetadata{}, false
 	}
 	restartText, _, found := strings.Cut(parts[2], ".log")
@@ -62,20 +62,20 @@ func parseKubernetesPodLogPath(root, path string) (kubernetesPathMetadata, bool)
 	}, true
 }
 
-func validDNSSubdomain(value string, maxBytes int) bool {
-	if value == "" || len(value) > maxBytes {
+func validDNSSubdomain(value string) bool {
+	if value == "" || len(value) > maxKubernetesNameBytes {
 		return false
 	}
 	for label := range strings.SplitSeq(value, ".") {
-		if !validDNSLabel(label, maxKubernetesNamespaceBytes) {
+		if !validDNSLabel(label) {
 			return false
 		}
 	}
 	return true
 }
 
-func validDNSLabel(value string, maxBytes int) bool {
-	if value == "" || len(value) > maxBytes ||
+func validDNSLabel(value string) bool {
+	if value == "" || len(value) > maxKubernetesNamespaceBytes ||
 		!asciiLowercaseAlphanumeric(value[0]) ||
 		!asciiLowercaseAlphanumeric(value[len(value)-1]) {
 		return false

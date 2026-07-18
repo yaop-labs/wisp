@@ -14,6 +14,8 @@ and Traces passthrough:
   CRI timestamp/fragment assembly, path-derived Kubernetes resource identity,
   bounded multiline assembly, explicit text timestamps, pre-spool content
   redaction, and rotate/truncate detection;
+- optional fail-open Kubernetes API metadata caching with UID verification,
+  workload/container identity, and label allowlists;
 - bounded journald collection through binary-safe Journal Export Format with
   durable cursors, filters, redaction, and explicit oversized-message handling;
 - Linux host metrics from `/proc`;

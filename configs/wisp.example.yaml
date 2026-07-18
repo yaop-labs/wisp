@@ -88,6 +88,16 @@ sources:
   #   format: cri
   #   kubernetes:
   #     pod_logs_root: /var/log/pods # change when kubelet podLogsDir is mounted elsewhere
+  #     api:                         # optional, in-cluster and fail-open at runtime
+  #       timeout: 2s
+  #       cache_ttl: 5m
+  #       stale_after: 1h
+  #       failure_retry: 30s
+  #       max_pods: 10000
+  #       workers: 2
+  #       labels:                    # strict allowlist; annotations are not copied
+  #         - app.kubernetes.io/name
+  #         - app.kubernetes.io/version
 
   # Read systemd journal entries through binary-safe Journal Export Format.
   # journald:

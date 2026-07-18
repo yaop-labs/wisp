@@ -148,6 +148,17 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				kubernetes = &filelogsrc.KubernetesConfig{
 					PodLogsRoot: fc.Kubernetes.PodLogsRoot,
 				}
+				if api := fc.Kubernetes.API; api != nil {
+					kubernetes.API = &filelogsrc.KubernetesAPIConfig{
+						Timeout:      api.Timeout.Std(),
+						CacheTTL:     api.CacheTTL.Std(),
+						StaleAfter:   api.StaleAfter.Std(),
+						FailureRetry: api.FailureRetry.Std(),
+						MaxPods:      api.MaxPods,
+						Workers:      api.Workers,
+						Labels:       slices.Clone(api.Labels),
+					}
+				}
 			}
 			var redaction *filelogsrc.RedactionConfig
 			if fc.Redaction != nil {
@@ -197,6 +208,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				"checkpoint_file", fc.CheckpointFile,
 				"format", source.Format(),
 				"kubernetes_enrichment", fc.Kubernetes != nil,
+				"kubernetes_api_enrichment",
+				fc.Kubernetes != nil && fc.Kubernetes.API != nil,
 				"redaction_rules", fileLogRedactionRuleCount(fc.Redaction),
 				"multiline", fc.Multiline != nil,
 				"timestamp_parsing", fc.Timestamp != nil,
@@ -496,6 +509,16 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			"Current number of regular files matched by filelog include/exclude patterns.",
 			func() float64 { return float64(filelogSrc.ActiveFiles()) },
 		)
+		if cfg.Sources.FileLog.Kubernetes != nil &&
+			cfg.Sources.FileLog.Kubernetes.API != nil {
+			selfobs.RegisterGaugeFunc(
+				"wisp_filelog_kubernetes_api_cache_entries",
+				"Current number of bounded Kubernetes API metadata cache entries.",
+				func() float64 {
+					return float64(filelogSrc.KubernetesAPICacheEntries())
+				},
+			)
+		}
 	}
 	if journaldSrc != nil {
 		checks = append(

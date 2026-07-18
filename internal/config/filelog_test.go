@@ -101,6 +101,43 @@ resource:
 	}
 }
 
+func TestFileLogKubernetesAPIConfigParses(t *testing.T) {
+	cfg, err := Parse([]byte(`
+sources:
+  filelog:
+    include: ["/var/log/pods/*/*/*.log"]
+    checkpoint_file: "/var/lib/wisp/filelog.json"
+    format: cri
+    kubernetes:
+      pod_logs_root: /var/log/pods
+      api:
+        timeout: 2s
+        cache_ttl: 5m
+        stale_after: 1h
+        failure_retry: 30s
+        max_pods: 5000
+        workers: 4
+        labels: [app.kubernetes.io/name, app.kubernetes.io/version]
+exporter:
+  otlp:
+    endpoint: "127.0.0.1:4317"
+resource:
+  attributes:
+    service.name: wisp
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := cfg.Sources.FileLog.Kubernetes.API
+	if api == nil || api.Timeout.Std() != 2*time.Second ||
+		api.CacheTTL.Std() != 5*time.Minute ||
+		api.StaleAfter.Std() != time.Hour ||
+		api.MaxPods != 5000 || api.Workers != 4 ||
+		len(api.Labels) != 2 {
+		t.Fatalf("Kubernetes API config=%+v", api)
+	}
+}
+
 func TestFileLogConfigRejectsUnsafeBounds(t *testing.T) {
 	tests := []struct {
 		name string
@@ -136,6 +173,16 @@ func TestFileLogConfigRejectsUnsafeBounds(t *testing.T) {
 			name: "filesystem root is too broad",
 			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    format: cri\n    kubernetes:\n      pod_logs_root: /",
 			want: "absolute non-root",
+		},
+		{
+			name: "Kubernetes API stale below TTL",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    format: cri\n    kubernetes:\n      api:\n        cache_ttl: 1h\n        stale_after: 5m",
+			want: "stale_after",
+		},
+		{
+			name: "Kubernetes API duplicate label",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    format: cri\n    kubernetes:\n      api:\n        labels: [app, app]",
+			want: "duplicate",
 		},
 		{
 			name: "redaction requires rules",
