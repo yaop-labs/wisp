@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -126,11 +127,21 @@ type OTLPSource struct {
 	Traces                         *OTLPTraceSource      `yaml:"traces"`
 }
 
-// OTLPTraceSource configures trace validation and explicit resource
-// enrichment. It never inherits the agent's own resource attributes.
+// OTLPTraceSource configures validation, explicit resource enrichment, and
+// opt-in whole-trace admission sampling. It never inherits the agent's own
+// resource attributes.
 type OTLPTraceSource struct {
 	Validation string             `yaml:"validation"`
 	Resource   *OTLPTraceResource `yaml:"resource"`
+	Sampling   *OTLPTraceSampling `yaml:"sampling"`
+}
+
+// OTLPTraceSampling is absent by default. Hash-seed sampling intentionally
+// mirrors the OpenTelemetry Collector's stable trace-ID decision function.
+type OTLPTraceSampling struct {
+	Mode               string   `yaml:"mode"`
+	SamplingPercentage *float32 `yaml:"sampling_percentage"`
+	HashSeed           uint32   `yaml:"hash_seed"`
 }
 
 // OTLPTraceResource adds operator-configured string attributes to every
@@ -419,6 +430,34 @@ func (c *Config) Validate() error {
 						key,
 					)
 				}
+			}
+		}
+		if sampling := o.Traces.Sampling; sampling != nil {
+			if sampling.Mode != "hash_seed" {
+				return fmt.Errorf(
+					"sources.otlp.traces.sampling.mode must be hash_seed",
+				)
+			}
+			if sampling.SamplingPercentage == nil {
+				return fmt.Errorf(
+					"sources.otlp.traces.sampling.sampling_percentage is required",
+				)
+			}
+			percentage := *sampling.SamplingPercentage
+			if math.IsNaN(float64(percentage)) ||
+				math.IsInf(float64(percentage), 0) ||
+				percentage < 0 ||
+				percentage > 100 {
+				return fmt.Errorf(
+					"sources.otlp.traces.sampling.sampling_percentage must be between 0 and 100",
+				)
+			}
+			const buckets = float32(1 << 14)
+			if percentage > 0 &&
+				uint32(percentage*(buckets/100)) == 0 {
+				return fmt.Errorf(
+					"sources.otlp.traces.sampling.sampling_percentage is below hash_seed resolution",
+				)
 			}
 		}
 	}

@@ -36,6 +36,9 @@ type TraceOptions struct {
 	Validation         string
 	ResourceAttributes map[string]string
 	ResourceConflict   string
+	SamplingMode       string
+	SamplingPercentage *float32
+	SamplingHashSeed   uint32
 }
 
 type traceProcessing struct {
@@ -43,6 +46,7 @@ type traceProcessing struct {
 	resourceAttributes map[string]string
 	resourceKeys       []string
 	resourceConflict   string
+	sampling           traceSampling
 }
 
 func newTraceProcessing(options TraceOptions) (traceProcessing, error) {
@@ -96,12 +100,17 @@ func newTraceProcessing(options TraceOptions) (traceProcessing, error) {
 			)
 		}
 	}
+	sampling, err := newTraceSampling(options)
+	if err != nil {
+		return traceProcessing{}, err
+	}
 	attributes := maps.Clone(options.ResourceAttributes)
 	return traceProcessing{
 		validation:         validation,
 		resourceAttributes: attributes,
 		resourceKeys:       slices.Sorted(maps.Keys(attributes)),
 		resourceConflict:   conflict,
+		sampling:           sampling,
 	}, nil
 }
 

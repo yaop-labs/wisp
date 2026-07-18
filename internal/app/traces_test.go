@@ -158,6 +158,103 @@ resource:
 	}
 }
 
+func TestAppAppliesExplicitWholeTraceSamplingBeforeExport(
+	t *testing.T,
+) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector := &tracesCollector{
+		got:   make(chan *coltracepb.ExportTraceServiceRequest, 1),
+		ids:   make(chan string, 1),
+		kinds: make(chan string, 1),
+	}
+	server := grpc.NewServer()
+	coltracepb.RegisterTraceServiceServer(server, collector)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+
+	yaml := fmt.Sprintf(`
+sources:
+  otlp:
+    grpc: "127.0.0.1:0"
+    traces:
+      validation: report
+      sampling:
+        mode: hash_seed
+        sampling_percentage: 0
+        hash_seed: 42
+exporter:
+  otlp:
+    endpoint: %q
+    protocol: grpc
+    retry:
+      max_attempts: 1
+resource:
+  attributes:
+    service.name: wisp-test
+`, listener.Addr().String())
+	cfg, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(cfg, discardLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := application.Start(runCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	connection, err := grpc.NewClient(
+		application.otlpReceiver.GRPCAddr(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	request := &coltracepb.ExportTraceServiceRequest{
+		ResourceSpans: []*tracepb.ResourceSpans{{
+			ScopeSpans: []*tracepb.ScopeSpans{{
+				Spans: []*tracepb.Span{{
+					TraceId:           bytes.Repeat([]byte{0x33}, 16),
+					SpanId:            bytes.Repeat([]byte{0x44}, 8),
+					Name:              "sampled-out",
+					StartTimeUnixNano: 1,
+					EndTimeUnixNano:   2,
+				}},
+			}},
+		}},
+	}
+	response, err := coltracepb.NewTraceServiceClient(connection).
+		Export(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.GetPartialSuccess() != nil {
+		t.Fatalf("sampling returned partial success: %v", response)
+	}
+	select {
+	case got := <-collector.got:
+		t.Fatalf("sampled-out trace reached collector: %v", got)
+	default:
+	}
+
+	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(
+		context.Background(),
+		3*time.Second,
+	)
+	defer shutdownCancel()
+	if err := application.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEffectiveTraceRequestBytesFitsSpoolBudgets(t *testing.T) {
 	cfg := config.Config{}
 	if got := effectiveTraceRequestBytes(cfg); got != 3<<20 {

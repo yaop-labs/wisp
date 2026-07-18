@@ -50,6 +50,9 @@ versioning without treating `v1.0.0` as a schedule target.
   conflict policies that never inherit the agent's own resource identity.
 - bounded complete-trace batching across resource and scope boundaries, exact
   oversized-trace partial success, and fixed-cardinality split telemetry.
+- explicit stateless whole-trace `hash_seed` admission sampling with
+  Collector-compatible deterministic decisions, invalid-ID fail-open
+  behavior, and fixed-cardinality decision telemetry.
 
 ### Changed
 
@@ -68,6 +71,9 @@ versioning without treating `v1.0.0` as a schedule target.
 - trace request size is automatically constrained by its spool budget; legacy
   whole-request envelopes are compatibility-split with deterministic child
   IDs after an atomic oversized-trace preflight.
+- sampled-out traces are acknowledged without OTLP partial success and never
+  reach spool durability; sampling remains disabled when its config block is
+  absent and does not rewrite trace flags or `tracestate`.
 - file checkpoints advance only after downstream delivery or spool fsync, so
   admission failures retry without data loss and crashes have an explicit
   at-least-once duplicate boundary.

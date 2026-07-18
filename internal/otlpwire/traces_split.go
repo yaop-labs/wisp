@@ -27,13 +27,27 @@ type TracesChunk struct {
 	Spans   int
 }
 
+// TraceSelectionUnit is one complete valid trace presented to an optional
+// admission selector. TraceID is a value copy and safe for the selector to
+// retain.
+type TraceSelectionUnit struct {
+	TraceID [16]byte
+	Spans   int
+}
+
 // TracesSplitResult reports planned chunks from AnalyzeTraces or successfully
-// emitted chunks from ForEachTracesChunk, plus traces that could not fit as an
-// indivisible unit.
+// emitted chunks from a ForEach function, plus selection, invalid-ID bypass,
+// and indivisible-size outcomes.
 type TracesSplitResult struct {
-	Chunks         int
-	RejectedTraces int
-	RejectedSpans  int
+	Chunks                int
+	RejectedTraces        int
+	RejectedSpans         int
+	SelectedTraces        int
+	SelectedSpans         int
+	ExcludedTraces        int
+	ExcludedSpans         int
+	BypassedInvalidTraces int
+	BypassedInvalidSpans  int
 }
 
 type traceSpanReference struct {
@@ -46,6 +60,8 @@ type traceSpanReference struct {
 
 type traceUnit struct {
 	references []traceSpanReference
+	traceID    [16]byte
+	valid      bool
 	spans      int
 	size       int
 }
@@ -81,7 +97,7 @@ func AnalyzeTraces(
 	request *coltracepb.ExportTraceServiceRequest,
 	maxBytes int,
 ) (TracesSplitResult, error) {
-	prepared, err := prepareTracesChunks(request, maxBytes)
+	prepared, err := prepareTracesChunks(request, maxBytes, nil)
 	if err != nil {
 		return prepared.result, err
 	}
@@ -105,7 +121,38 @@ func ForEachTracesChunk(
 	maxBytes int,
 	emit func(TracesChunk) error,
 ) (TracesSplitResult, error) {
-	prepared, err := prepareTracesChunks(request, maxBytes)
+	return forEachTracesChunk(request, maxBytes, nil, emit)
+}
+
+// ForEachSelectedTracesChunk applies selectTrace once to every complete valid
+// trace, then emits the selected traces through the same bounded chunking
+// contract as ForEachTracesChunk. Invalid trace IDs bypass selection and remain
+// separate lossless units for report-mode compatibility.
+func ForEachSelectedTracesChunk(
+	request *coltracepb.ExportTraceServiceRequest,
+	maxBytes int,
+	selectTrace func(TraceSelectionUnit) bool,
+	emit func(TracesChunk) error,
+) (TracesSplitResult, error) {
+	return forEachTracesChunk(
+		request,
+		maxBytes,
+		selectTrace,
+		emit,
+	)
+}
+
+func forEachTracesChunk(
+	request *coltracepb.ExportTraceServiceRequest,
+	maxBytes int,
+	selectTrace func(TraceSelectionUnit) bool,
+	emit func(TracesChunk) error,
+) (TracesSplitResult, error) {
+	prepared, err := prepareTracesChunks(
+		request,
+		maxBytes,
+		selectTrace,
+	)
 	result := prepared.result
 	if err != nil {
 		return result, err
@@ -160,6 +207,7 @@ func ForEachTracesChunk(
 func prepareTracesChunks(
 	request *coltracepb.ExportTraceServiceRequest,
 	maxBytes int,
+	selectTrace func(TraceSelectionUnit) bool,
 ) (preparedTracesChunks, error) {
 	var prepared preparedTracesChunks
 	if request == nil {
@@ -173,18 +221,44 @@ func prepareTracesChunks(
 	if len(prepared.units) == 0 {
 		return prepared, nil
 	}
-	prepared.traces = len(prepared.units)
-	prepared.spans = TraceSpanCount(request)
-	if proto.Size(request) <= maxBytes {
+	candidates := make([]int, 0, len(prepared.units))
+	for index := range prepared.units {
+		unit := &prepared.units[index]
+		if !unit.valid {
+			prepared.result.BypassedInvalidTraces++
+			prepared.result.BypassedInvalidSpans += unit.spans
+			candidates = append(candidates, index)
+			continue
+		}
+		if selectTrace != nil && !selectTrace(TraceSelectionUnit{
+			TraceID: unit.traceID,
+			Spans:   unit.spans,
+		}) {
+			prepared.result.ExcludedTraces++
+			prepared.result.ExcludedSpans += unit.spans
+			continue
+		}
+		prepared.result.SelectedTraces++
+		prepared.result.SelectedSpans += unit.spans
+		candidates = append(candidates, index)
+	}
+	if len(candidates) == 0 {
+		return prepared, nil
+	}
+	prepared.traces = len(candidates)
+	prepared.spans = prepared.result.SelectedSpans +
+		prepared.result.BypassedInvalidSpans
+	if len(candidates) == len(prepared.units) &&
+		proto.Size(request) <= maxBytes {
 		prepared.direct = request
 		return prepared, nil
 	}
 	accepted := make(
 		[]acceptedTraceUnit,
 		0,
-		len(prepared.units),
+		len(candidates),
 	)
-	for index := range prepared.units {
+	for _, index := range candidates {
 		unitRequest := materializeTraceUnit(prepared.units[index])
 		prepared.units[index].size = proto.Size(unitRequest)
 		if prepared.units[index].size > maxBytes {
@@ -301,7 +375,9 @@ func collectTraceUnits(
 					if !exists {
 						unitIndex = len(units)
 						validUnits[key] = unitIndex
-						units = append(units, traceUnit{})
+						unit := traceUnit{valid: true}
+						copy(unit.traceID[:], span.TraceId)
+						units = append(units, unit)
 					}
 				} else {
 					unitIndex = len(units)

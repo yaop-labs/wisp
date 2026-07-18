@@ -395,49 +395,60 @@ func (r *Receiver) ingestTracesResult(
 	if proto.Size(processed) > maxRequestBytes {
 		selfobs.OTLPTraceSplitRequests.Inc()
 	}
-	splitResult, err := otlpwire.ForEachTracesChunk(
-		processed,
-		maxRequestBytes,
-		func(chunk otlpwire.TracesChunk) error {
-			payload, err := (proto.MarshalOptions{
-				Deterministic: true,
-			}).Marshal(chunk.Request)
-			if err != nil {
-				return fmt.Errorf(
-					"%w: encode OTLP Traces: %v",
-					pipeline.ErrPermanent,
-					err,
-				)
-			}
-			envelope, err := signal.New(
-				signal.Traces,
-				signal.OTLPTracesSchema,
-				signal.OTLPProtobufEncoding,
-				payload,
-				commonTracesResource(chunk.Request),
+	emitChunk := func(chunk otlpwire.TracesChunk) error {
+		payload, err := (proto.MarshalOptions{
+			Deterministic: true,
+		}).Marshal(chunk.Request)
+		if err != nil {
+			return fmt.Errorf(
+				"%w: encode OTLP Traces: %v",
+				pipeline.ErrPermanent,
+				err,
 			)
-			if err != nil {
-				return fmt.Errorf(
-					"%w: create OTLP Traces envelope: %v",
-					pipeline.ErrPermanent,
-					err,
-				)
-			}
-			if err := r.tracesEmit(ctx, envelope); err != nil {
-				return err
-			}
-			selfobs.OTLPTraceSpansReceived.Add(
+		}
+		envelope, err := signal.New(
+			signal.Traces,
+			signal.OTLPTracesSchema,
+			signal.OTLPProtobufEncoding,
+			payload,
+			commonTracesResource(chunk.Request),
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"%w: create OTLP Traces envelope: %v",
+				pipeline.ErrPermanent,
+				err,
+			)
+		}
+		if err := r.tracesEmit(ctx, envelope); err != nil {
+			return err
+		}
+		selfobs.OTLPTraceSpansReceived.Add(
+			uint64(chunk.Spans),
+		)
+		selfobs.OTLPTraceChunks.Inc()
+		if len(r.traceProcessing.resourceKeys) > 0 {
+			selfobs.OTLPTraceResourceEnrichedSpans.Add(
 				uint64(chunk.Spans),
 			)
-			selfobs.OTLPTraceChunks.Inc()
-			if len(r.traceProcessing.resourceKeys) > 0 {
-				selfobs.OTLPTraceResourceEnrichedSpans.Add(
-					uint64(chunk.Spans),
-				)
-			}
-			return nil
-		},
-	)
+		}
+		return nil
+	}
+	var splitResult otlpwire.TracesSplitResult
+	if r.traceProcessing.sampling.enabled {
+		splitResult, err = otlpwire.ForEachSelectedTracesChunk(
+			processed,
+			maxRequestBytes,
+			r.traceProcessing.sampling.selectTrace,
+			emitChunk,
+		)
+	} else {
+		splitResult, err = otlpwire.ForEachTracesChunk(
+			processed,
+			maxRequestBytes,
+			emitChunk,
+		)
+	}
 	if err != nil {
 		if errors.Is(
 			err,
@@ -459,6 +470,24 @@ func (r *Receiver) ingestTracesResult(
 	selfobs.OTLPTraceOversizedSpans.Add(
 		uint64(splitResult.RejectedSpans),
 	)
+	if r.traceProcessing.sampling.enabled {
+		selfobs.OTLPTraceSamplingRequests.Inc()
+		selfobs.OTLPTraceSamplingKeptTraces.Add(
+			uint64(splitResult.SelectedTraces),
+		)
+		selfobs.OTLPTraceSamplingKeptSpans.Add(
+			uint64(splitResult.SelectedSpans),
+		)
+		selfobs.OTLPTraceSamplingDroppedTraces.Add(
+			uint64(splitResult.ExcludedTraces),
+		)
+		selfobs.OTLPTraceSamplingDroppedSpans.Add(
+			uint64(splitResult.ExcludedSpans),
+		)
+		selfobs.OTLPTraceSamplingInvalidUnitsBypassed.Add(
+			uint64(splitResult.BypassedInvalidTraces),
+		)
+	}
 	selfobs.OTLPTraceRequestsReceived.Inc()
 	return ingestResult, nil
 }

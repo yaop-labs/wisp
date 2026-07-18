@@ -335,6 +335,106 @@ func TestForEachTracesChunkTreatsInvalidTraceIDsAsSeparateUnits(
 	}
 }
 
+func TestForEachSelectedTracesChunkExcludesWholeTraceAndBypassesInvalid(
+	t *testing.T,
+) {
+	keptID := bytes.Repeat([]byte{0x91}, 16)
+	droppedID := bytes.Repeat([]byte{0x92}, 16)
+	request := &coltracepb.ExportTraceServiceRequest{
+		ResourceSpans: []*tracepb.ResourceSpans{
+			traceResource("first", "scope-a", []*tracepb.Span{
+				traceSpan(droppedID, 1, 8),
+				traceSpan(keptID, 2, 8),
+				traceSpan(make([]byte, 16), 3, 8),
+			}),
+			traceResource("second", "scope-b", []*tracepb.Span{
+				traceSpan(droppedID, 4, 8),
+				traceSpan(keptID, 5, 8),
+			}),
+		},
+	}
+	request.ProtoReflect().SetUnknown([]byte{0x78, 0x01})
+	var selected []TraceSelectionUnit
+	var chunks []TracesChunk
+	result, err := ForEachSelectedTracesChunk(
+		request,
+		MaxReceiverRequestBytes,
+		func(unit TraceSelectionUnit) bool {
+			selected = append(selected, unit)
+			return unit.TraceID == [16]byte{
+				0x91, 0x91, 0x91, 0x91,
+				0x91, 0x91, 0x91, 0x91,
+				0x91, 0x91, 0x91, 0x91,
+				0x91, 0x91, 0x91, 0x91,
+			}
+		},
+		func(chunk TracesChunk) error {
+			chunks = append(chunks, chunk)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != 2 ||
+		result.SelectedTraces != 1 ||
+		result.SelectedSpans != 2 ||
+		result.ExcludedTraces != 1 ||
+		result.ExcludedSpans != 2 ||
+		result.BypassedInvalidTraces != 1 ||
+		result.BypassedInvalidSpans != 1 ||
+		result.Chunks != 1 ||
+		len(chunks) != 1 {
+		t.Fatalf(
+			"selected=%+v result=%+v chunks=%d",
+			selected,
+			result,
+			len(chunks),
+		)
+	}
+	if !bytes.Equal(
+		chunks[0].Request.ProtoReflect().GetUnknown(),
+		[]byte{0x78, 0x01},
+	) {
+		t.Fatal("request unknown fields were not retained")
+	}
+	for _, resource := range chunks[0].Request.ResourceSpans {
+		for _, scope := range resource.ScopeSpans {
+			for _, span := range scope.Spans {
+				if bytes.Equal(span.TraceId, droppedID) {
+					t.Fatal("excluded trace was emitted")
+				}
+			}
+		}
+	}
+}
+
+func TestForEachSelectedTracesChunkCanExcludeEverything(
+	t *testing.T,
+) {
+	request := traceBatchRequest(2, 8)
+	request.ProtoReflect().SetUnknown(
+		bytes.Repeat([]byte{0x78, 0x01}, 40),
+	)
+	result, err := ForEachSelectedTracesChunk(
+		request,
+		64,
+		func(TraceSelectionUnit) bool { return false },
+		func(TracesChunk) error {
+			t.Fatal("fully excluded request emitted")
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExcludedTraces != 2 ||
+		result.ExcludedSpans != 2 ||
+		result.Chunks != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
 func FuzzForEachTracesChunk(f *testing.F) {
 	seed, _ := proto.Marshal(traceBatchRequest(6, 64))
 	f.Add(seed, uint16(512))
@@ -399,6 +499,51 @@ func FuzzForEachTracesChunk(f *testing.F) {
 		if err != nil &&
 			!errors.Is(err, ErrTraceRequestMetadataTooLarge) {
 			t.Fatalf("unexpected err=%v", err)
+		}
+
+		selectedEmittedSpans := 0
+		selectedResult, selectedErr :=
+			ForEachSelectedTracesChunk(
+				&request,
+				limit,
+				func(unit TraceSelectionUnit) bool {
+					return unit.TraceID[15]&1 == 0
+				},
+				func(chunk TracesChunk) error {
+					if size := proto.Size(chunk.Request); size > limit {
+						t.Fatalf(
+							"selected chunk size=%d limit=%d",
+							size,
+							limit,
+						)
+					}
+					selectedEmittedSpans += chunk.Spans
+					return nil
+				},
+			)
+		if selectedErr == nil &&
+			selectedEmittedSpans+
+				selectedResult.RejectedSpans+
+				selectedResult.ExcludedSpans !=
+				TraceSpanCount(&request) {
+			t.Fatalf(
+				"selected emitted=%d rejected=%d "+
+					"excluded=%d want=%d",
+				selectedEmittedSpans,
+				selectedResult.RejectedSpans,
+				selectedResult.ExcludedSpans,
+				TraceSpanCount(&request),
+			)
+		}
+		if selectedErr != nil &&
+			!errors.Is(
+				selectedErr,
+				ErrTraceRequestMetadataTooLarge,
+			) {
+			t.Fatalf(
+				"unexpected selected err=%v",
+				selectedErr,
+			)
 		}
 	})
 }

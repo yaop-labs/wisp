@@ -56,6 +56,10 @@ sources:
   #   # danger_allow_bearer_over_plaintext: true
   #   traces:
   #     validation: report              # off | report (default) | reject
+  #     sampling:                       # absent = lossless (default)
+  #       mode: hash_seed
+  #       sampling_percentage: 10
+  #       hash_seed: 42                 # keep identical across one Wisp tier
   #     resource:                       # explicit; never inherits Wisp's resource
   #       conflict: preserve            # preserve | replace | reject
   #       attributes:

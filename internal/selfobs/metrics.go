@@ -154,6 +154,30 @@ var (
 		"wisp_otlp_trace_resource_conflicts_total",
 		"OTLP Traces requests rejected by the explicit resource conflict policy.",
 	)
+	OTLPTraceSamplingRequests = newCounter(
+		"wisp_otlp_trace_sampling_requests_total",
+		"Non-empty OTLP Traces requests evaluated by explicit whole-trace admission sampling.",
+	)
+	OTLPTraceSamplingKeptTraces = newCounter(
+		"wisp_otlp_trace_sampling_kept_traces_total",
+		"Valid complete traces selected by the configured admission sampler before size admission.",
+	)
+	OTLPTraceSamplingKeptSpans = newCounter(
+		"wisp_otlp_trace_sampling_kept_spans_total",
+		"Spans in valid complete traces selected by the configured admission sampler before size admission.",
+	)
+	OTLPTraceSamplingDroppedTraces = newCounter(
+		"wisp_otlp_trace_sampling_dropped_traces_total",
+		"Valid complete traces intentionally excluded by the configured admission sampler.",
+	)
+	OTLPTraceSamplingDroppedSpans = newCounter(
+		"wisp_otlp_trace_sampling_dropped_spans_total",
+		"Spans intentionally excluded with their complete trace by the configured admission sampler.",
+	)
+	OTLPTraceSamplingInvalidUnitsBypassed = newCounter(
+		"wisp_otlp_trace_sampling_invalid_units_bypassed_total",
+		"Invalid trace-ID span units preserved without a sampling decision for report-mode compatibility.",
+	)
 	FileLogRecords           = newCounter("wisp_filelog_records_total", "File log records durably admitted.")
 	FileLogBatches           = newCounter("wisp_filelog_batches_total", "File log batches durably admitted.")
 	FileLogBytesRead         = newCounter("wisp_filelog_bytes_read_total", "Bytes read while tailing configured files, including retried bytes.")

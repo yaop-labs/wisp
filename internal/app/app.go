@@ -128,6 +128,13 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			traceOptions := otlprecv.TraceOptions{}
 			if traces := oc.Traces; traces != nil {
 				traceOptions.Validation = traces.Validation
+				if sampling := traces.Sampling; sampling != nil {
+					traceOptions.SamplingMode = sampling.Mode
+					traceOptions.SamplingPercentage =
+						sampling.SamplingPercentage
+					traceOptions.SamplingHashSeed =
+						sampling.HashSeed
+				}
 				if traceResource := traces.Resource; traceResource != nil {
 					traceOptions.ResourceAttributes =
 						traceResource.Attributes
@@ -376,6 +383,9 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		traceValidation := otlprecv.TraceValidationReport
 		traceResourceAttributes := 0
 		traceResourceConflict := otlprecv.TraceResourcePreserve
+		traceSamplingMode := "off"
+		var traceSamplingPercentage float32
+		var traceSamplingHashSeed uint32
 		if traces := cfg.Sources.OTLP.Traces; traces != nil {
 			if traces.Validation != "" {
 				traceValidation = traces.Validation
@@ -388,13 +398,22 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 						traces.Resource.Conflict
 				}
 			}
+			if sampling := traces.Sampling; sampling != nil {
+				traceSamplingMode = sampling.Mode
+				traceSamplingPercentage =
+					*sampling.SamplingPercentage
+				traceSamplingHashSeed = sampling.HashSeed
+			}
 		}
 		logger.Info("otlp traces processing configured",
 			"max_receiver_body_bytes", otlpwire.MaxReceiverRequestBytes,
 			"max_trace_request_bytes", traceRequestBytes,
 			"validation", traceValidation,
 			"resource_attributes", traceResourceAttributes,
-			"resource_conflict", traceResourceConflict)
+			"resource_conflict", traceResourceConflict,
+			"sampling_mode", traceSamplingMode,
+			"sampling_percentage", traceSamplingPercentage,
+			"sampling_hash_seed", traceSamplingHashSeed)
 	}
 	if logsSender != nil {
 		logger.Info("otlp logs request splitting configured",

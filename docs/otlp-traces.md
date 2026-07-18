@@ -1,8 +1,8 @@
 # OTLP Traces path
 
 Status: durable passthrough implemented in `v0.8.x`; correlation validation,
-explicit resource enrichment, and bounded complete-trace batching implemented
-in `v0.10.x`.
+explicit resource enrichment, bounded complete-trace batching, and opt-in
+whole-trace admission sampling implemented in `v0.10.x`.
 
 Wisp accepts OTLP Traces on the same configured receiver listeners as metrics
 and logs:
@@ -154,9 +154,57 @@ preflights the complete legacy payload: an indivisible oversized trace or
 unplaceable request metadata rejects/quarantines the envelope before any chunk
 is sent, preventing a partially exported legacy record.
 
-The envelope disk format is unchanged and the new config field is additive.
-Explicit optional sampling remains future work and must not silently change
-the default lossless semantics.
+## Optional whole-trace admission sampling
+
+Sampling is disabled when the `sampling` block is absent. Enabling it requires
+an explicit mode and percentage:
+
+```yaml
+sources:
+  otlp:
+    traces:
+      sampling:
+        mode: hash_seed
+        sampling_percentage: 10
+        hash_seed: 42
+```
+
+`sampling_percentage` is a float from 0 through 100. Zero intentionally drops
+every valid trace; 100 keeps every valid trace. Non-zero values below the
+14-bit `hash_seed` resolution are rejected instead of silently behaving as
+zero. All Wisp replicas in one sampling tier should use the same seed.
+
+The decision function matches the
+[OpenTelemetry Collector `hash_seed` selection](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/processor/probabilisticsamplerprocessor/README.md#hash-seed):
+FNV-1a hashes the little-endian 32-bit seed followed by the 16-byte trace ID,
+and its low 14 bits are compared with the configured percentage threshold.
+The decision is deterministic and nested: with the same seed, every trace
+selected at a lower percentage is also selected at a higher percentage. All
+spans for one valid trace ID receive one decision across requests, resources,
+scopes, restarts, and replicas.
+The seed is an operational consistency value, not a secret or a security
+boundary; `hash_seed` is not intended to resist adversarially chosen trace IDs.
+
+Sampling runs after correlation validation and explicit enrichment but before
+size admission and spool durability. A sampled-out trace is intentionally
+acknowledged as protocol success, is not reported as OTLP partial success, and
+never reaches disk or the exporter. Invalid trace IDs cannot receive a stable
+whole-trace decision, so validation `report` preserves them without sampling;
+use validation `reject` to atomically refuse them.
+
+This is a stateless edge admission gate, not SDK sampling or tail sampling.
+Wisp does not inspect `sampling.priority`, change trace flags, or rewrite
+`tracestate` threshold/randomness fields. Consequently, it does not advertise
+an adjusted count for trace-derived statistical aggregation. Use
+[SDK sampling](https://opentelemetry.io/docs/specs/otel/trace/sdk/#sampling) or
+an OpenTelemetry proportional/equalizing sampler when propagated sampling
+probability is required. Attribute, latency, or error-aware
+[tail sampling](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/processor/tailsamplingprocessor/README.md)
+requires sticky trace routing, bounded decision state, late-span policy, and a
+separate durability design; it is not simulated here.
+
+The config additions are optional and the envelope disk format is unchanged.
+The default path remains lossless.
 
 Self-observability includes:
 
@@ -176,4 +224,10 @@ Self-observability includes:
   `wisp_otlp_trace_invalid_*`, plus duplicate and parent-cycle counters;
 - `wisp_otlp_trace_resource_enriched_spans_total`;
 - `wisp_otlp_trace_resource_conflicts_total`;
+- `wisp_otlp_trace_sampling_requests_total`;
+- `wisp_otlp_trace_sampling_kept_traces_total`;
+- `wisp_otlp_trace_sampling_kept_spans_total`;
+- `wisp_otlp_trace_sampling_dropped_traces_total`;
+- `wisp_otlp_trace_sampling_dropped_spans_total`;
+- `wisp_otlp_trace_sampling_invalid_units_bypassed_total`;
 - shared `wisp_spool_signal_*{signal="traces"}` gauges.

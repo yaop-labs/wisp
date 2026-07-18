@@ -407,10 +407,21 @@ func TestTraceResourceRejectConflictIsPermanent(t *testing.T) {
 }
 
 func TestTraceProcessingOptionsValidateAtReceiverConstruction(t *testing.T) {
+	validPercentage := float32(10)
+	invalidPercentage := float32(101)
 	for _, options := range []TraceOptions{
 		{Validation: "drop"},
 		{ResourceConflict: TraceResourceReplace},
 		{ResourceAttributes: map[string]string{"": "value"}},
+		{
+			SamplingMode:       "random",
+			SamplingPercentage: &validPercentage,
+		},
+		{SamplingMode: TraceSamplingHashSeed},
+		{
+			SamplingMode:       TraceSamplingHashSeed,
+			SamplingPercentage: &invalidPercentage,
+		},
 	} {
 		_, err := New(
 			Options{Traces: options},

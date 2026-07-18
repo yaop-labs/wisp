@@ -81,6 +81,22 @@ resource: {attributes: {service.name: wisp}}`, "max_log_request_bytes"},
 sources: {host: {interval: 15s}}
 exporter: {otlp: {endpoint: "x:4317", max_trace_request_bytes: 1024}}
 resource: {attributes: {service.name: wisp}}`, "max_trace_request_bytes"},
+		{"trace sampling mode required", `
+sources: {otlp: {grpc: "127.0.0.1:4317", traces: {sampling: {sampling_percentage: 10}}}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, "sampling.mode"},
+		{"trace sampling percentage required", `
+sources: {otlp: {grpc: "127.0.0.1:4317", traces: {sampling: {mode: hash_seed}}}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, "sampling_percentage is required"},
+		{"trace sampling percentage bounded", `
+sources: {otlp: {grpc: "127.0.0.1:4317", traces: {sampling: {mode: hash_seed, sampling_percentage: 101}}}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, "between 0 and 100"},
+		{"trace sampling percentage resolution", `
+sources: {otlp: {grpc: "127.0.0.1:4317", traces: {sampling: {mode: hash_seed, sampling_percentage: 0.00001}}}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, "below hash_seed resolution"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -124,6 +140,11 @@ sources:
         port: 9100
   otlp:
     grpc: "0.0.0.0:4317"
+    traces:
+      sampling:
+        mode: hash_seed
+        sampling_percentage: 12.5
+        hash_seed: 42
     tls:
       enabled: true
       cert_file: /s.crt
@@ -179,6 +200,16 @@ resource:
 	}
 	if otlp.Auth == nil || len(otlp.Auth.Bearer) != 2 || otlp.Auth.Bearer[1].TokenEnv != "WISP_TEST_TOKEN" {
 		t.Errorf("receiver auth not decoded: %+v", otlp.Auth)
+	}
+	if otlp.Traces == nil ||
+		otlp.Traces.Sampling == nil ||
+		otlp.Traces.Sampling.SamplingPercentage == nil ||
+		*otlp.Traces.Sampling.SamplingPercentage != 12.5 ||
+		otlp.Traces.Sampling.HashSeed != 42 {
+		t.Errorf(
+			"trace sampling not decoded: %+v",
+			otlp.Traces,
+		)
 	}
 	if cfg.Exporter.OTLP.Auth == nil || cfg.Exporter.OTLP.Auth.Token != "egress-key" {
 		t.Errorf("exporter auth not decoded: %+v", cfg.Exporter.OTLP.Auth)

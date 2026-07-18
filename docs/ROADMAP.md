@@ -51,7 +51,8 @@ second pipeline rewrite.
 
 - correlation validation and explicit resource enrichment — implemented;
 - oversized-trace handling and fair complete-trace batching — implemented;
-- explicit optional sampling, with no hidden semantic rewriting.
+- explicit optional whole-trace admission sampling, with a lossless default
+  and no hidden trace-state rewriting — implemented.
 
 ## v0.11.x — Linux host depth
 
