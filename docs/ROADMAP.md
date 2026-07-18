@@ -72,12 +72,13 @@ second pipeline rewrite.
 - parallel collector execution with one-in-flight supervision and bounded
   cycle deadlines that cannot accumulate workers behind a stuck syscall —
   implemented;
-- bounded workload cgroup enumeration after resource attribution;
-- container/workload resource attribution;
-- deeper failure injection for stuck host mounts.
+- stuck-worker failure injection covering deadline, healthy-data continuity,
+  duplicate-worker suppression, and recovery — implemented.
 
 ## v0.12+ — eBPF and later profiles
 
+- shared bounded container/workload identity resolution and cgroup lifecycle
+  handling for both host and eBPF telemetry;
 - L4 network telemetry and workload attribution first;
 - HTTP/gRPC RED telemetry where protocol and TLS visibility are reliable;
 - SQL only after a separate feasibility and privacy review;

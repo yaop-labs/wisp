@@ -5,6 +5,10 @@ versioning without treating `v1.0.0` as a schedule target.
 
 ## Unreleased
 
+No changes yet.
+
+## v0.11.0 — 2026-07-18
+
 ### Added
 
 - configurable read-only procfs, sysfs, rootfs, and cgroupfs roots for
