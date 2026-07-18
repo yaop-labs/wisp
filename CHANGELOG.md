@@ -43,6 +43,11 @@ versioning without treating `v1.0.0` as a schedule target.
   UID-verified bounded asynchronous caching, stale/failure policy, workload
   owner resolution, node/container image identity, label allowlists, projected
   token rotation, and explicit RBAC.
+- bounded OTLP trace correlation validation with lossless report mode,
+  atomic strict rejection, W3C tracestate checks, duplicate/cycle detection,
+  and fixed-cardinality reason metrics.
+- explicit OTLP trace resource enrichment with preserve, replace, and reject
+  conflict policies that never inherit the agent's own resource identity.
 
 ### Changed
 
@@ -56,6 +61,8 @@ versioning without treating `v1.0.0` as a schedule target.
   oversized log envelopes use compatibility splitting on export.
 - OTLP Traces bypass metric-only processors and use the shared signal-neutral
   queue with independent pressure and capacity controls.
+- OTLP/HTTP trace failures now return protobuf `google.rpc.Status` bodies
+  alongside their protocol-defined HTTP status codes.
 - file checkpoints advance only after downstream delivery or spool fsync, so
   admission failures retry without data loss and crashes have an explicit
   at-least-once duplicate boundary.

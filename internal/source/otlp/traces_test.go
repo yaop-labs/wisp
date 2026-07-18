@@ -15,6 +15,7 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -238,6 +239,25 @@ func TestTracesGRPCMapsBackpressure(t *testing.T) {
 	}
 }
 
+func TestTracesGRPCMapsStrictValidationToInvalidArgument(t *testing.T) {
+	request := sampleTracesRequest()
+	request.ResourceSpans[0].ScopeSpans[0].Spans[0].TraceId =
+		make([]byte, 16)
+	service := &grpcTracesService{r: &Receiver{
+		traceProcessing: mustTraceProcessing(t, TraceOptions{
+			Validation: TraceValidationReject,
+		}),
+		tracesEmit: func(context.Context, signal.Envelope) error {
+			t.Fatal("invalid traces reached emitter")
+			return nil
+		},
+	}}
+	_, err := service.Export(context.Background(), request)
+	if got := status.Code(err); got != codes.InvalidArgument {
+		t.Fatalf("status=%s, want InvalidArgument", got)
+	}
+}
+
 func TestTracesHTTPMapsBackpressure(t *testing.T) {
 	receiver := &Receiver{
 		tracesEmit: func(context.Context, signal.Envelope) error {
@@ -254,6 +274,45 @@ func TestTracesHTTPMapsBackpressure(t *testing.T) {
 	if response.Code != http.StatusTooManyRequests {
 		t.Fatalf("status=%d, want 429", response.Code)
 	}
+	assertOTLPHTTPError(
+		t,
+		response,
+		codes.ResourceExhausted,
+	)
+}
+
+func TestTracesHTTPMapsStrictValidationToBadRequest(t *testing.T) {
+	traceRequest := sampleTracesRequest()
+	traceRequest.ResourceSpans[0].ScopeSpans[0].Spans[0].TraceId =
+		make([]byte, 16)
+	body, err := proto.Marshal(traceRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver := &Receiver{
+		traceProcessing: mustTraceProcessing(t, TraceOptions{
+			Validation: TraceValidationReject,
+		}),
+		tracesEmit: func(context.Context, signal.Envelope) error {
+			t.Fatal("invalid traces reached emitter")
+			return nil
+		},
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/traces",
+		bytes.NewReader(body),
+	)
+	response := httptest.NewRecorder()
+	receiver.handleTracesHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", response.Code)
+	}
+	assertOTLPHTTPError(
+		t,
+		response,
+		codes.InvalidArgument,
+	)
 }
 
 func TestTracesHTTPRejectsOversizedBody(t *testing.T) {
@@ -272,6 +331,30 @@ func TestTracesHTTPRejectsOversizedBody(t *testing.T) {
 	receiver.handleTracesHTTP(response, request)
 	if response.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status=%d, want 413", response.Code)
+	}
+	assertOTLPHTTPError(
+		t,
+		response,
+		codes.InvalidArgument,
+	)
+}
+
+func assertOTLPHTTPError(
+	t *testing.T,
+	response *httptest.ResponseRecorder,
+	want codes.Code,
+) {
+	t.Helper()
+	if got := response.Header().Get("Content-Type"); got !=
+		signal.OTLPProtobufEncoding {
+		t.Fatalf("content type=%q", got)
+	}
+	var value statuspb.Status
+	if err := proto.Unmarshal(response.Body.Bytes(), &value); err != nil {
+		t.Fatalf("decode google.rpc.Status: %v", err)
+	}
+	if codes.Code(value.Code) != want || value.Message == "" {
+		t.Fatalf("status body=%v", &value)
 	}
 }
 

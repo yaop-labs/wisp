@@ -124,6 +124,16 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		}},
 		{"otlp", cfg.Sources.OTLP != nil, func() (pipeline.Source, error) {
 			oc := cfg.Sources.OTLP
+			traceOptions := otlprecv.TraceOptions{}
+			if traces := oc.Traces; traces != nil {
+				traceOptions.Validation = traces.Validation
+				if traceResource := traces.Resource; traceResource != nil {
+					traceOptions.ResourceAttributes =
+						traceResource.Attributes
+					traceOptions.ResourceConflict =
+						traceResource.Conflict
+				}
+			}
 			logger.Info("otlp receive source enabled",
 				"grpc", oc.GRPC, "http", oc.HTTP,
 				"tls", oc.TLS != nil && oc.TLS.Enabled, "mtls", oc.TLS != nil && oc.TLS.ClientCAFile != "",
@@ -136,6 +146,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				Insecure:                       oc.Insecure,
 				DangerAllowBearerOverPlaintext: oc.DangerAllowBearerOverPlaintext,
 				MaxLogRequestBytes:             logRequestBytes,
+				Traces:                         traceOptions,
 			}, logger)
 			otlpRecv = receiver
 			return receiver, err
@@ -358,8 +369,27 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			return nil, tracesErr
 		}
 		tracesSender = retryexp.WrapSender(tracesExporter, retryConfig)
-		logger.Info("otlp traces lossless passthrough configured",
-			"max_receiver_request_bytes", otlpwire.MaxReceiverRequestBytes)
+		traceValidation := otlprecv.TraceValidationReport
+		traceResourceAttributes := 0
+		traceResourceConflict := otlprecv.TraceResourcePreserve
+		if traces := cfg.Sources.OTLP.Traces; traces != nil {
+			if traces.Validation != "" {
+				traceValidation = traces.Validation
+			}
+			if traces.Resource != nil {
+				traceResourceAttributes =
+					len(traces.Resource.Attributes)
+				if traces.Resource.Conflict != "" {
+					traceResourceConflict =
+						traces.Resource.Conflict
+				}
+			}
+		}
+		logger.Info("otlp traces processing configured",
+			"max_receiver_request_bytes", otlpwire.MaxReceiverRequestBytes,
+			"validation", traceValidation,
+			"resource_attributes", traceResourceAttributes,
+			"resource_conflict", traceResourceConflict)
 	}
 	if logsSender != nil {
 		logger.Info("otlp logs request splitting configured",

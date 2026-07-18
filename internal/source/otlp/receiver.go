@@ -19,6 +19,7 @@ import (
 	"github.com/yaop-labs/reef/edge"
 	"github.com/yaop-labs/reef/grpcreef"
 	"github.com/yaop-labs/reef/tlsconf"
+	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -50,6 +51,7 @@ type Options struct {
 	Insecure                       bool
 	DangerAllowBearerOverPlaintext bool
 	MaxLogRequestBytes             int
+	Traces                         TraceOptions
 }
 
 // Receiver serves OTLP metrics and enabled opaque signal capabilities over
@@ -72,6 +74,7 @@ type Receiver struct {
 	logsEmit           func(context.Context, signal.Envelope) error
 	tracesEmit         func(context.Context, signal.Envelope) error
 	maxLogRequestBytes int
+	traceProcessing    traceProcessing
 
 	grpcSrv *grpc.Server
 	httpSrv *http.Server
@@ -97,6 +100,10 @@ func (r *Receiver) SetTracesEmitter(emit func(context.Context, signal.Envelope) 
 func New(opts Options, logger *slog.Logger) (*Receiver, error) {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	traceProcessing, err := newTraceProcessing(opts.Traces)
+	if err != nil {
+		return nil, err
 	}
 	var grpcOpts []grpc.ServerOption
 	var grpcEdge *grpcreef.ServerEdge
@@ -142,6 +149,7 @@ func New(opts Options, logger *slog.Logger) (*Receiver, error) {
 		grpcOpts: grpcOpts, httpMiddleware: httpMiddleware,
 		grpcEdge: grpcEdge, httpEdge: httpEdge, ready: make(chan struct{}),
 		maxLogRequestBytes: normalizedLogRequestBytes(opts.MaxLogRequestBytes),
+		traceProcessing:    traceProcessing,
 	}, nil
 }
 
@@ -318,13 +326,34 @@ func (r *Receiver) ingestTraces(ctx context.Context, request *coltracepb.ExportT
 	if spans == 0 {
 		return nil
 	}
-	payload, err := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
+	if r.traceProcessing.validation != TraceValidationOff {
+		report := validateTraceCorrelation(request)
+		recordTraceValidation(report)
+		if report.invalid() &&
+			r.traceProcessing.validation == TraceValidationReject {
+			return fmt.Errorf(
+				"%w: OTLP Traces correlation validation failed: %s",
+				pipeline.ErrPermanent,
+				report.message(),
+			)
+		}
+	}
+	processed, err := r.traceProcessing.enrich(request)
+	if err != nil {
+		selfobs.OTLPTraceResourceConflicts.Inc()
+		return fmt.Errorf(
+			"%w: OTLP Traces resource enrichment: %v",
+			pipeline.ErrPermanent,
+			err,
+		)
+	}
+	payload, err := (proto.MarshalOptions{Deterministic: true}).Marshal(processed)
 	if err != nil {
 		return fmt.Errorf("%w: encode OTLP Traces: %v", pipeline.ErrPermanent, err)
 	}
 	envelope, err := signal.New(
 		signal.Traces, signal.OTLPTracesSchema, signal.OTLPProtobufEncoding,
-		payload, commonTracesResource(request),
+		payload, commonTracesResource(processed),
 	)
 	if err != nil {
 		return err
@@ -334,10 +363,16 @@ func (r *Receiver) ingestTraces(ctx context.Context, request *coltracepb.ExportT
 	}
 	selfobs.OTLPTraceSpansReceived.Add(uint64(spans))
 	selfobs.OTLPTraceRequestsReceived.Inc()
+	if len(r.traceProcessing.resourceKeys) > 0 {
+		selfobs.OTLPTraceResourceEnrichedSpans.Add(uint64(spans))
+	}
 	return nil
 }
 
 func traceSpanCount(request *coltracepb.ExportTraceServiceRequest) int {
+	if request == nil {
+		return 0
+	}
 	count := 0
 	for _, resourceSpans := range request.ResourceSpans {
 		if resourceSpans == nil {
@@ -350,6 +385,28 @@ func traceSpanCount(request *coltracepb.ExportTraceServiceRequest) int {
 		}
 	}
 	return count
+}
+
+func recordTraceValidation(report traceValidationReport) {
+	selfobs.OTLPTraceValidationRequests.Inc()
+	if !report.invalid() {
+		return
+	}
+	selfobs.OTLPTraceValidationFailures.Inc()
+	selfobs.OTLPTraceInvalidSpans.Add(uint64(report.invalidSpans))
+	selfobs.OTLPTraceInvalidTraceIDs.Add(uint64(report.invalidTraceIDs))
+	selfobs.OTLPTraceInvalidSpanIDs.Add(uint64(report.invalidSpanIDs))
+	selfobs.OTLPTraceInvalidParentIDs.Add(uint64(report.invalidParentIDs))
+	selfobs.OTLPTraceInvalidLinks.Add(uint64(report.invalidLinks))
+	selfobs.OTLPTraceInvalidTraceStates.Add(
+		uint64(report.invalidTraceStates),
+	)
+	selfobs.OTLPTraceDuplicateSpanIDs.Add(uint64(report.duplicateSpanIDs))
+	selfobs.OTLPTraceParentCycleSpans.Add(uint64(report.parentCycleSpans))
+	selfobs.OTLPTraceMissingNames.Add(uint64(report.missingNames))
+	selfobs.OTLPTraceInvalidTimestamps.Add(
+		uint64(report.invalidTimestamps),
+	)
 }
 
 func commonTracesResource(request *coltracepb.ExportTraceServiceRequest) map[string]string {
@@ -544,22 +601,43 @@ func (r *Receiver) handleLogsHTTP(w http.ResponseWriter, req *http.Request) {
 
 func (r *Receiver) handleTracesHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		w.Header().Set("Allow", http.MethodPost)
+		writeOTLPHTTPStatus(
+			w,
+			http.StatusMethodNotAllowed,
+			codes.InvalidArgument,
+			"method not allowed",
+		)
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxBodyBytes))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			http.Error(w, "OTLP Traces request body too large", http.StatusRequestEntityTooLarge)
+			writeOTLPHTTPStatus(
+				w,
+				http.StatusRequestEntityTooLarge,
+				codes.InvalidArgument,
+				"OTLP Traces request body too large",
+			)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeOTLPHTTPStatus(
+			w,
+			http.StatusBadRequest,
+			codes.InvalidArgument,
+			"could not read OTLP Traces request body",
+		)
 		return
 	}
 	var request coltracepb.ExportTraceServiceRequest
 	if err := proto.Unmarshal(body, &request); err != nil {
-		http.Error(w, "bad protobuf: "+err.Error(), http.StatusBadRequest)
+		writeOTLPHTTPStatus(
+			w,
+			http.StatusBadRequest,
+			codes.InvalidArgument,
+			"invalid OTLP Traces protobuf",
+		)
 		return
 	}
 	if err := r.ingestTraces(req.Context(), &request); err != nil {
@@ -567,11 +645,26 @@ func (r *Receiver) handleTracesHTTP(w http.ResponseWriter, req *http.Request) {
 		case errors.Is(err, context.Canceled):
 			return
 		case errors.Is(err, pipeline.ErrBackpressure):
-			http.Error(w, "wisp backpressure: traces spool above high-water mark", http.StatusTooManyRequests)
+			writeOTLPHTTPStatus(
+				w,
+				http.StatusTooManyRequests,
+				codes.ResourceExhausted,
+				"wisp backpressure: traces spool above high-water mark",
+			)
 		case errors.Is(err, pipeline.ErrPermanent):
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			writeOTLPHTTPStatus(
+				w,
+				http.StatusBadRequest,
+				codes.InvalidArgument,
+				err.Error(),
+			)
 		default:
-			http.Error(w, "traces pipeline unavailable", http.StatusServiceUnavailable)
+			writeOTLPHTTPStatus(
+				w,
+				http.StatusServiceUnavailable,
+				codes.Unavailable,
+				"traces pipeline unavailable",
+			)
 		}
 		return
 	}
@@ -579,4 +672,22 @@ func (r *Receiver) handleTracesHTTP(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", signal.OTLPProtobufEncoding)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(response)
+}
+
+func writeOTLPHTTPStatus(
+	writer http.ResponseWriter,
+	httpStatus int,
+	code codes.Code,
+	message string,
+) {
+	body, err := proto.Marshal(&statuspb.Status{
+		Code: int32(code), Message: message,
+	})
+	if err != nil {
+		http.Error(writer, "OTLP response encoding failed", http.StatusInternalServerError)
+		return
+	}
+	writer.Header().Set("Content-Type", signal.OTLPProtobufEncoding)
+	writer.WriteHeader(httpStatus)
+	_, _ = writer.Write(body)
 }

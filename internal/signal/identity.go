@@ -8,7 +8,8 @@ import (
 
 var identityKeys = map[string]struct{}{
 	"service.name": {}, "service.namespace": {}, "service.instance.id": {},
-	"service.version": {}, "host.id": {}, "host.name": {}, "process.pid": {},
+	"service.version": {}, "deployment.environment.name": {},
+	"host.id": {}, "host.name": {}, "process.pid": {},
 	"process.executable.name": {}, "process.executable.path": {},
 	"process.executable.build_id.gnu": {}, "process.executable.build_id.go": {},
 	"process.runtime.name": {}, "process.runtime.version": {},

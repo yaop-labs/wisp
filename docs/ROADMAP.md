@@ -49,7 +49,7 @@ second pipeline rewrite.
 
 ## v0.10.x — trace processing depth
 
-- correlation validation and explicit resource enrichment;
+- correlation validation and explicit resource enrichment — implemented;
 - oversized-trace handling and fair batching;
 - explicit optional sampling, with no hidden semantic rewriting.
 

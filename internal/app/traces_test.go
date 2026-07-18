@@ -52,6 +52,13 @@ func TestAppRoutesOTLPTracesThroughSharedSpool(t *testing.T) {
 sources:
   otlp:
     grpc: "127.0.0.1:0"
+    traces:
+      validation: report
+      resource:
+        conflict: preserve
+        attributes:
+          deployment.environment.name: production
+          service.namespace: shop
 exporter:
   otlp:
     endpoint: %q
@@ -108,6 +115,20 @@ resource:
 	case got := <-collector.got:
 		if got.ResourceSpans[0].ScopeSpans[0].Spans[0].Name != "checkout" {
 			t.Fatalf("collector got changed span: %v", got)
+		}
+		attributes := make(map[string]string)
+		for _, attribute := range got.ResourceSpans[0].Resource.Attributes {
+			if attribute != nil && attribute.Value != nil {
+				attributes[attribute.Key] =
+					attribute.Value.GetStringValue()
+			}
+		}
+		if attributes["deployment.environment.name"] != "production" ||
+			attributes["service.namespace"] != "shop" {
+			t.Fatalf("collector resource=%v", attributes)
+		}
+		if _, leaked := attributes["service.name"]; leaked {
+			t.Fatalf("agent resource leaked into application trace: %v", attributes)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for downstream traces")

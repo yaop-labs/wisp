@@ -123,6 +123,21 @@ type OTLPSource struct {
 	Auth                           *bearer.ServerConfig  `yaml:"auth"`
 	Insecure                       bool                  `yaml:"insecure"`
 	DangerAllowBearerOverPlaintext bool                  `yaml:"danger_allow_bearer_over_plaintext"`
+	Traces                         *OTLPTraceSource      `yaml:"traces"`
+}
+
+// OTLPTraceSource configures trace validation and explicit resource
+// enrichment. It never inherits the agent's own resource attributes.
+type OTLPTraceSource struct {
+	Validation string             `yaml:"validation"`
+	Resource   *OTLPTraceResource `yaml:"resource"`
+}
+
+// OTLPTraceResource adds operator-configured string attributes to every
+// non-empty ResourceSpans using an explicit conflict policy.
+type OTLPTraceResource struct {
+	Attributes map[string]string `yaml:"attributes"`
+	Conflict   string            `yaml:"conflict"`
 }
 
 // FileLogSource configures bounded newline-delimited file tailing. Checkpoints
@@ -364,6 +379,47 @@ func (c *Config) Validate() error {
 	}
 	if o := c.Sources.OTLP; o != nil && o.GRPC == "" && o.HTTP == "" {
 		return fmt.Errorf("sources.otlp: at least one of grpc or http address is required")
+	}
+	if o := c.Sources.OTLP; o != nil && o.Traces != nil {
+		if mode := o.Traces.Validation; mode != "" &&
+			mode != "off" && mode != "report" && mode != "reject" {
+			return fmt.Errorf(
+				"sources.otlp.traces.validation must be off, report, or reject",
+			)
+		}
+		if resource := o.Traces.Resource; resource != nil {
+			if len(resource.Attributes) == 0 ||
+				len(resource.Attributes) > 32 {
+				return fmt.Errorf(
+					"sources.otlp.traces.resource.attributes must contain between 1 and 32 entries",
+				)
+			}
+			if conflict := resource.Conflict; conflict != "" &&
+				conflict != "preserve" &&
+				conflict != "replace" &&
+				conflict != "reject" {
+				return fmt.Errorf(
+					"sources.otlp.traces.resource.conflict must be preserve, replace, or reject",
+				)
+			}
+			for key, value := range resource.Attributes {
+				if key == "" || len(key) > 256 ||
+					!utf8.ValidString(key) ||
+					strings.IndexFunc(key, unicode.IsControl) >= 0 {
+					return fmt.Errorf(
+						"sources.otlp.traces.resource.attributes contains an invalid key",
+					)
+				}
+				if len(value) > 4096 ||
+					!utf8.ValidString(value) ||
+					strings.IndexFunc(value, unicode.IsControl) >= 0 {
+					return fmt.Errorf(
+						"sources.otlp.traces.resource.attributes[%q] must be valid printable UTF-8 up to 4096 bytes",
+						key,
+					)
+				}
+			}
+		}
 	}
 	if f := c.Sources.FileLog; f != nil {
 		if len(f.Include) == 0 {

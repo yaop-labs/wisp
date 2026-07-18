@@ -54,6 +54,13 @@ sources:
   #         token_env: WISP_INGEST_KEY      # also: token_file or token
   #   # Bearer over plaintext is rejected even on loopback. Emergency/dev-only:
   #   # danger_allow_bearer_over_plaintext: true
+  #   traces:
+  #     validation: report              # off | report (default) | reject
+  #     resource:                       # explicit; never inherits Wisp's resource
+  #       conflict: preserve            # preserve | replace | reject
+  #       attributes:
+  #         deployment.environment.name: production
+  #         service.namespace: shop
 
   # Tail newline-delimited application logs with durable checkpoints.
   # filelog:

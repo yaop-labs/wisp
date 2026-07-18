@@ -74,6 +74,62 @@ var (
 		"wisp_otlp_trace_spans_rejected_total",
 		"Trace spans rejected in an OTLP downstream partial-success response.",
 	)
+	OTLPTraceValidationRequests = newCounter(
+		"wisp_otlp_trace_validation_requests_total",
+		"Non-empty OTLP Traces requests inspected by correlation validation.",
+	)
+	OTLPTraceValidationFailures = newCounter(
+		"wisp_otlp_trace_validation_failures_total",
+		"OTLP Traces requests containing at least one correlation validation failure.",
+	)
+	OTLPTraceInvalidSpans = newCounter(
+		"wisp_otlp_trace_invalid_spans_total",
+		"OTLP spans containing one or more correlation validation failures.",
+	)
+	OTLPTraceInvalidTraceIDs = newCounter(
+		"wisp_otlp_trace_invalid_trace_ids_total",
+		"OTLP spans with a trace ID that was not a non-zero 16-byte identifier.",
+	)
+	OTLPTraceInvalidSpanIDs = newCounter(
+		"wisp_otlp_trace_invalid_span_ids_total",
+		"OTLP spans with a span ID that was not a non-zero 8-byte identifier.",
+	)
+	OTLPTraceInvalidParentIDs = newCounter(
+		"wisp_otlp_trace_invalid_parent_ids_total",
+		"OTLP spans with a non-empty parent span ID that was not a valid identifier.",
+	)
+	OTLPTraceInvalidLinks = newCounter(
+		"wisp_otlp_trace_invalid_links_total",
+		"OTLP span links with an invalid trace or span identifier.",
+	)
+	OTLPTraceInvalidTraceStates = newCounter(
+		"wisp_otlp_trace_invalid_tracestates_total",
+		"OTLP spans or links with a tracestate that violates W3C Trace Context syntax.",
+	)
+	OTLPTraceDuplicateSpanIDs = newCounter(
+		"wisp_otlp_trace_duplicate_span_ids_total",
+		"Duplicate trace ID and span ID pairs found within one OTLP request.",
+	)
+	OTLPTraceParentCycleSpans = newCounter(
+		"wisp_otlp_trace_parent_cycle_spans_total",
+		"OTLP spans participating in a parent cycle visible within one request.",
+	)
+	OTLPTraceMissingNames = newCounter(
+		"wisp_otlp_trace_missing_names_total",
+		"OTLP spans with an empty required name.",
+	)
+	OTLPTraceInvalidTimestamps = newCounter(
+		"wisp_otlp_trace_invalid_timestamps_total",
+		"OTLP spans with missing timestamps or an end time before the start time.",
+	)
+	OTLPTraceResourceEnrichedSpans = newCounter(
+		"wisp_otlp_trace_resource_enriched_spans_total",
+		"OTLP spans durably admitted after applying an explicit trace resource enrichment policy.",
+	)
+	OTLPTraceResourceConflicts = newCounter(
+		"wisp_otlp_trace_resource_conflicts_total",
+		"OTLP Traces requests rejected by the explicit resource conflict policy.",
+	)
 	FileLogRecords           = newCounter("wisp_filelog_records_total", "File log records durably admitted.")
 	FileLogBatches           = newCounter("wisp_filelog_batches_total", "File log batches durably admitted.")
 	FileLogBytesRead         = newCounter("wisp_filelog_bytes_read_total", "Bytes read while tailing configured files, including retried bytes.")
