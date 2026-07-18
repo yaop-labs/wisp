@@ -39,8 +39,9 @@ second pipeline rewrite.
 - bounded ordered content redaction before OTLP/spool durability — implemented;
 - bounded start-pattern multiline framing with timeout/rotation boundaries and
   restart-safe oversized continuation state — implemented;
+- explicit bounded non-CRI timestamp extraction for RFC3339 and Unix units —
+  implemented;
 - journald collection;
-- non-CRI timestamp parsing and size bounds;
 - optional API-backed Kubernetes workload, node, label, and image enrichment;
 - documented at-least-once behavior and duplicate boundary.
 

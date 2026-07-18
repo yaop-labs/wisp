@@ -87,6 +87,35 @@ or stream of empty continuations from wedging the file.
 Redaction runs after multiline assembly, so a rule may intentionally match
 across joined lines with an RE2 `(?s)` expression.
 
+## Text event timestamps
+
+Text records can extract an explicit event timestamp:
+
+```yaml
+sources:
+  filelog:
+    format: text
+    timestamp:
+      pattern: '^(\S+)'
+      format: rfc3339nano
+```
+
+The RE2 pattern must contain exactly one capture group. Wisp applies it to the
+fully framed logical body before redaction and limits the captured value to
+128 bytes. Supported formats are:
+
+- `rfc3339` and `rfc3339nano`, including an explicit `Z` or numeric offset;
+- `unix`, `unix_ms`, `unix_us`, and `unix_ns` as unsigned epoch values.
+
+Wisp deliberately does not guess timezone, timestamp position, unit, or a
+custom locale. CRI already supplies its own event time and cannot be combined
+with this block.
+
+When capture or parsing fails, the log is retained with OTLP
+`time_unix_nano` unset and collection time in `observed_time_unix_nano`.
+Successes and failures are counted, including work repeated after an admission
+retry.
+
 ## Content redaction before durability
 
 Redaction is opt-in and runs on the fully framed logical body before Wisp
@@ -309,7 +338,9 @@ Self-observability includes:
 - `wisp_filelog_redaction_matches_total`;
 - `wisp_filelog_redaction_dropped_records_total`;
 - `wisp_filelog_multiline_forced_flushes_total`;
-- `wisp_filelog_multiline_oversized_records_total`.
+- `wisp_filelog_multiline_oversized_records_total`;
+- `wisp_filelog_timestamp_parsed_total`;
+- `wisp_filelog_timestamp_errors_total`.
 
-Content timestamps for non-CRI text, API-backed Kubernetes metadata
-enrichment, and journald collection remain separate increments.
+API-backed Kubernetes metadata enrichment and journald collection remain
+separate increments.

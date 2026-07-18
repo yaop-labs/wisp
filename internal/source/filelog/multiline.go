@@ -168,11 +168,13 @@ func (s *Source) readMultilineFile(
 		start := pending.startOffset
 		end := pending.endOffset
 		pending = nil
+		timeUnixNano := s.parseTextTimestamp(body)
 		redacted, keep := s.redactLogBody(body)
 		if !keep {
 			return persistBoundary(end, false)
 		}
 		record := newLogRecord(redacted, keyPath, start)
+		record.TimeUnixNano = timeUnixNano
 		if reason != "" {
 			record.Attributes = append(
 				record.Attributes,

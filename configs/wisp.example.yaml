@@ -75,6 +75,9 @@ sources:
   #     start_pattern: '^\d{4}-\d{2}-\d{2}T'
   #     max_lines: 256
   #     flush_after: 5s
+  #   timestamp:                       # text format only; exactly one capture
+  #     pattern: '^(\S+)'
+  #     format: rfc3339nano             # rfc3339 | unix[_ms|_us|_ns]
   #
   # Kubernetes CRI logs: use the real pod files for rotation recovery, not
   # the symlinks under /var/log/containers.

@@ -32,6 +32,9 @@ versioning without treating `v1.0.0` as a schedule target.
 - bounded start-pattern multiline text framing with inactivity and rotation
   boundaries, redaction after assembly, restart-safe pending replay, and
   automatic recovery after oversized records.
+- explicit bounded text timestamp capture for RFC3339 and Unix epoch units,
+  parsed after framing and before redaction without dropping records on
+  timestamp errors.
 
 ### Changed
 

@@ -162,6 +162,13 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 					FlushAfter:   fc.Multiline.FlushAfter.Std(),
 				}
 			}
+			var timestamp *filelogsrc.TimestampConfig
+			if fc.Timestamp != nil {
+				timestamp = &filelogsrc.TimestampConfig{
+					Pattern: fc.Timestamp.Pattern,
+					Format:  fc.Timestamp.Format,
+				}
+			}
 			source, err := filelogsrc.New(filelogsrc.Config{
 				Include:        fc.Include,
 				Exclude:        fc.Exclude,
@@ -172,6 +179,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				Kubernetes:     kubernetes,
 				Redaction:      redaction,
 				Multiline:      multiline,
+				Timestamp:      timestamp,
 				MaxLineBytes:   maxLineBytes,
 				MaxBatchBytes:  maxBatchBytes,
 				MaxReadBytes:   fc.MaxReadBytes,
@@ -189,6 +197,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				"kubernetes_enrichment", fc.Kubernetes != nil,
 				"redaction_rules", fileLogRedactionRuleCount(fc.Redaction),
 				"multiline", fc.Multiline != nil,
+				"timestamp_parsing", fc.Timestamp != nil,
 				"max_line_bytes", maxLineBytes,
 				"max_batch_bytes", maxBatchBytes)
 			return source, nil

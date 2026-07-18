@@ -53,6 +53,7 @@ type Config struct {
 	Kubernetes     *KubernetesConfig
 	Redaction      *RedactionConfig
 	Multiline      *MultilineConfig
+	Timestamp      *TimestampConfig
 	MaxLineBytes   int
 	MaxBatchBytes  int
 	MaxReadBytes   int64
@@ -74,12 +75,18 @@ type MultilineConfig struct {
 	FlushAfter   time.Duration
 }
 
+type TimestampConfig struct {
+	Pattern string
+	Format  string
+}
+
 type Source struct {
 	cfg       Config
 	logger    *slog.Logger
 	store     *checkpointStore
 	redactor  *contentRedactor
 	multiline *multilineFramer
+	timestamp *timestampParser
 	emit      func(context.Context, signal.Envelope) error
 
 	healthMu  sync.RWMutex
@@ -119,6 +126,13 @@ func New(cfg Config, logger *slog.Logger) (*Source, error) {
 	}
 	if multiline != nil && cfg.Format != "text" {
 		return nil, fmt.Errorf("filelog: multiline requires text format")
+	}
+	timestamp, err := newTimestampParser(cfg.Timestamp)
+	if err != nil {
+		return nil, err
+	}
+	if timestamp != nil && cfg.Format != "text" {
+		return nil, fmt.Errorf("filelog: timestamp parsing requires text format")
 	}
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("filelog: durable file identity requires Linux")
@@ -172,7 +186,7 @@ func New(cfg Config, logger *slog.Logger) (*Source, error) {
 	}
 	return &Source{
 		cfg: cfg, logger: logger, store: store, redactor: redactor,
-		multiline: multiline,
+		multiline: multiline, timestamp: timestamp,
 	}, nil
 }
 
@@ -499,6 +513,7 @@ func (s *Source) readTextFile(ctx context.Context, keyPath, readPath string, sta
 				}
 			} else {
 				line = bytesTrimLineEnding(line)
+				timeUnixNano := s.parseTextTimestamp(line)
 				redacted, keep := s.redactLogBody(line)
 				if !keep {
 					if err := flush(); err != nil {
@@ -512,6 +527,7 @@ func (s *Source) readTextFile(ctx context.Context, keyPath, readPath string, sta
 					}
 				} else {
 					record := newLogRecord(redacted, keyPath, lineStart)
+					record.TimeUnixNano = timeUnixNano
 					recordBytes := proto.Size(record)
 					if batchBytes+recordBytes > s.cfg.MaxBatchBytes && len(records) > 0 {
 						if err := flush(); err != nil {

@@ -38,7 +38,7 @@ func TestAppRoutesFileLogsThroughSharedSpool(t *testing.T) {
 	checkpointPath := filepath.Join(dir, "state", "filelog.json")
 	if err := os.WriteFile(
 		logPath,
-		[]byte("START token=from-file\n detail\nSTART pending\n"),
+		[]byte("START 1784369472 token=from-file\n detail\nSTART 1784369473 pending\n"),
 		0o600,
 	); err != nil {
 		t.Fatal(err)
@@ -55,6 +55,9 @@ sources:
     multiline:
       start_pattern: '^START '
       flush_after: 1h
+    timestamp:
+      pattern: '^START (\d+)'
+      format: unix
 exporter:
   otlp:
     endpoint: %q
@@ -88,8 +91,11 @@ resource:
 	select {
 	case request := <-collector.got:
 		record := request.ResourceLogs[0].ScopeLogs[0].LogRecords[0]
-		if got := record.Body.GetStringValue(); got != "START [REDACTED]\n detail" {
+		if got := record.Body.GetStringValue(); got != "START 1784369472 [REDACTED]\n detail" {
 			t.Fatalf("collector body=%q, want framed and redacted content", got)
+		}
+		if got := record.TimeUnixNano; got != 1784369472*uint64(time.Second) {
+			t.Fatalf("collector event time=%d", got)
 		}
 		if got := request.ResourceLogs[0].Resource.Attributes[0].Value.GetStringValue(); got != "checkout" {
 			t.Fatalf("collector resource service.name=%q", got)

@@ -136,6 +136,7 @@ type FileLogSource struct {
 	Kubernetes     *FileLogKubernetes `yaml:"kubernetes"`
 	Redaction      *FileLogRedaction  `yaml:"redaction"`
 	Multiline      *FileLogMultiline  `yaml:"multiline"`
+	Timestamp      *FileLogTimestamp  `yaml:"timestamp"`
 	MaxLineBytes   int                `yaml:"max_line_bytes"`
 	MaxBatchBytes  int                `yaml:"max_batch_bytes"`
 	MaxReadBytes   int64              `yaml:"max_read_bytes_per_poll"`
@@ -157,6 +158,12 @@ type FileLogMultiline struct {
 	StartPattern string   `yaml:"start_pattern"`
 	MaxLines     int      `yaml:"max_lines"`
 	FlushAfter   Duration `yaml:"flush_after"`
+}
+
+// FileLogTimestamp extracts one timestamp capture from framed text records.
+type FileLogTimestamp struct {
+	Pattern string `yaml:"pattern"`
+	Format  string `yaml:"format"`
 }
 
 // EBPFSource configures kernel-side probes (Linux-only, requires CAP_BPF).
@@ -403,6 +410,26 @@ func (c *Config) Validate() error {
 			if flushAfter != 0 &&
 				(flushAfter < 100*time.Millisecond || flushAfter > 24*time.Hour) {
 				return fmt.Errorf("sources.filelog.multiline.flush_after must be between 100ms and 24h")
+			}
+		}
+		if f.Timestamp != nil {
+			if f.Format == "cri" {
+				return fmt.Errorf("sources.filelog.timestamp is only supported with text format")
+			}
+			if f.Timestamp.Pattern == "" || len(f.Timestamp.Pattern) > 1024 {
+				return fmt.Errorf("sources.filelog.timestamp.pattern must contain between 1 and 1024 bytes")
+			}
+			compiled, err := regexp.Compile(f.Timestamp.Pattern)
+			if err != nil || compiled.NumSubexp() != 1 {
+				return fmt.Errorf("sources.filelog.timestamp.pattern must be a valid regular expression with exactly one capture group")
+			}
+			if compiled.MatchString("") {
+				return fmt.Errorf("sources.filelog.timestamp.pattern must not match empty input")
+			}
+			switch f.Timestamp.Format {
+			case "rfc3339", "rfc3339nano", "unix", "unix_ms", "unix_us", "unix_ns":
+			default:
+				return fmt.Errorf("sources.filelog.timestamp.format must be rfc3339, rfc3339nano, unix, unix_ms, unix_us, or unix_ns")
 			}
 		}
 		maxLine := f.MaxLineBytes

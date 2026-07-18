@@ -75,6 +75,32 @@ resource:
 	}
 }
 
+func TestFileLogTimestampConfigParses(t *testing.T) {
+	cfg, err := Parse([]byte(`
+sources:
+  filelog:
+    include: ["/var/log/app/*.log"]
+    checkpoint_file: "/var/lib/wisp/filelog.json"
+    format: text
+    timestamp:
+      pattern: '^(\S+)'
+      format: rfc3339nano
+exporter:
+  otlp:
+    endpoint: "127.0.0.1:4317"
+resource:
+  attributes:
+    service.name: checkout
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	timestamp := cfg.Sources.FileLog.Timestamp
+	if timestamp == nil || timestamp.Format != "rfc3339nano" {
+		t.Fatalf("timestamp config=%+v", timestamp)
+	}
+}
+
 func TestFileLogConfigRejectsUnsafeBounds(t *testing.T) {
 	tests := []struct {
 		name string
@@ -145,6 +171,21 @@ func TestFileLogConfigRejectsUnsafeBounds(t *testing.T) {
 			name: "multiline rejects short flush",
 			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    multiline:\n      start_pattern: '^START '\n      flush_after: 1ms",
 			want: "flush_after",
+		},
+		{
+			name: "timestamp rejects CRI",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    format: cri\n    timestamp:\n      pattern: '^(\\\\S+)'\n      format: rfc3339nano",
+			want: "text format",
+		},
+		{
+			name: "timestamp requires one capture",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    timestamp:\n      pattern: '^\\\\S+'\n      format: rfc3339nano",
+			want: "capture group",
+		},
+		{
+			name: "timestamp rejects unknown format",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    timestamp:\n      pattern: '^(\\\\S+)'\n      format: auto",
+			want: "timestamp.format",
 		},
 		{
 			name: "batch below line",

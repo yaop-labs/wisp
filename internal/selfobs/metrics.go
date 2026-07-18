@@ -119,6 +119,14 @@ var (
 		"wisp_filelog_multiline_oversized_records_total",
 		"Multiline records dropped after exceeding content, line-count, or read-span bounds.",
 	)
+	FileLogTimestampParsed = newCounter(
+		"wisp_filelog_timestamp_parsed_total",
+		"Text file log records whose configured event timestamp was parsed successfully, including retried reads.",
+	)
+	FileLogTimestampErrors = newCounter(
+		"wisp_filelog_timestamp_errors_total",
+		"Text file log timestamp captures that were absent, malformed, or outside the OTLP range, including retried reads.",
+	)
 )
 
 // gaugeFunc is a gauge whose current value is read from fn at scrape time.
