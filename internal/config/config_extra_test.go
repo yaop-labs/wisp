@@ -117,6 +117,10 @@ resource: {attributes: {service.name: wisp}}`, "procfs_path must be a clean abso
 sources: {host: {sysfs_path: /host/sys/../sys}}
 exporter: {otlp: {endpoint: "x:4317"}}
 resource: {attributes: {service.name: wisp}}`, "sysfs_path must be a clean absolute path"},
+		{"host ID detection requires enabled detection", `
+sources: {host: {resource_detection: {enabled: false, host_id: true}}}
+exporter: {otlp: {endpoint: "x:4317"}}
+resource: {attributes: {service.name: wisp}}`, "host_id requires resource detection to be enabled"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

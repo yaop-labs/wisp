@@ -21,6 +21,9 @@ versioning without treating `v1.0.0` as a schedule target.
 - privacy-safe aggregate IPv4/IPv6 socket occupancy and memory plus allowlisted
   TCP/UDP opens, resets, retransmits, errors, drops, and datagram counters for
   the visible network namespace;
+- mount-aware fail-open host hostname, architecture, and OS resource detection
+  that fills only missing attributes, with privacy-sensitive stable machine ID
+  detection disabled unless explicitly enabled;
 - per-collector duration/success gauges plus host collection, unsupported,
   failure, emitted-series, and pipeline-admission counters;
 - deterministic procfs fixtures covering alternate mounts, malformed data,
@@ -41,7 +44,10 @@ versioning without treating `v1.0.0` as a schedule target.
   visible network namespace rather than assuming host networking;
 - remote, automounted, and FUSE filesystem `statfs` calls are excluded until a
   stuck-mount supervisor can bound blocking syscalls without accumulating
-  abandoned workers.
+  abandoned workers;
+- host metrics gain missing standard host/OS resource attributes by default;
+  explicit resource values remain authoritative and deployments can disable
+  detection entirely.
 
 ## v0.10.0 — 2026-07-18
 

@@ -25,7 +25,8 @@ Traces paths:
 - bounded Linux host metrics from configurable virtual-filesystem roots,
   including CPU, memory, interfaces, aggregate socket/TCP/UDP health, load,
   uptime, PSI, UTS metadata, disk I/O, local filesystem capacity, inode usage,
-  mount health, and scoped cgroup v2 CPU/memory/PID/I/O limits and usage;
+  mount health, scoped cgroup v2 CPU/memory/PID/I/O limits and usage, and
+  mount-aware host/OS resource detection with opt-in stable machine identity;
 - relabel, counter-reset, and cardinality processors;
 - OTLP gRPC/HTTP export with retry, bounded crash-safe spool, and backpressure;
 - Reef TLS, mTLS, and bearer authentication on ingress and egress;

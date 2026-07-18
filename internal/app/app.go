@@ -127,6 +127,31 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			if hc.CgroupFSPath != "" {
 				paths.CgroupFS = hc.CgroupFSPath
 			}
+			hostResource := resource
+			detectionEnabled := true
+			includeHostID := false
+			if detection := hc.ResourceDetection; detection != nil {
+				if detection.Enabled != nil {
+					detectionEnabled = *detection.Enabled
+				}
+				includeHostID = detection.HostID
+			}
+			if detectionEnabled {
+				var detectionErrors []error
+				hostResource, detectionErrors = hostsrc.DetectResource(
+					resource,
+					paths,
+					cfg.Resource.Attributes,
+					includeHostID,
+				)
+				for _, err := range detectionErrors {
+					logger.Warn(
+						"host resource detection incomplete",
+						"err",
+						err,
+					)
+				}
+			}
 			logger.Info(
 				"host source enabled",
 				"interval", hc.Interval.Std(),
@@ -135,11 +160,13 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				"sysfs_path", paths.SysFS,
 				"rootfs_path", paths.RootFS,
 				"cgroupfs_path", paths.CgroupFS,
+				"resource_detection", detectionEnabled,
+				"host_id_detection", includeHostID,
 			)
 			return hostsrc.NewWithPaths(
 				hc.Interval.Std(),
 				hc.Collectors,
-				resource,
+				hostResource,
 				paths,
 				logger,
 			), nil

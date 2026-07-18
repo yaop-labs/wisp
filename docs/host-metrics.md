@@ -17,6 +17,9 @@ sources:
     sysfs_path: /host/sys
     rootfs_path: /host/root
     cgroupfs_path: /host/sys/fs/cgroup
+    resource_detection:
+      enabled: true
+      host_id: false
 ```
 
 An empty `collectors` list enables every collector. Collector names are
@@ -25,10 +28,28 @@ must be at least `100ms`. Filesystem roots must be clean absolute paths.
 
 The default roots are `/proc`, `/sys`, `/`, and `/sys/fs/cgroup`.
 `procfs_path` supplies kernel counters and mountinfo. `rootfs_path` supplies
-the paths used for local filesystem `statfs` calls. `sysfs_path` and
-`cgroupfs_path` is the exact cgroup v2 root observed by the cgroup collector.
+the paths used for local filesystem `statfs` calls. `cgroupfs_path` is the
+exact cgroup v2 root observed by the cgroup collector.
 `sysfs_path` remains an explicit compatibility surface for upcoming device
 metadata, so deployments do not need a later configuration shape migration.
+
+Host resource detection is enabled when its block or `enabled` field is
+omitted. It fills only attributes that were not explicitly configured under
+top-level `resource.attributes`:
+
+- `host.name` from `<rootfs_path>/etc/hostname`;
+- `host.arch` from the visible kernel UTS machine;
+- `os.type=linux`;
+- `os.name`, `os.version`, and `os.description` from bounded
+  `<rootfs_path>/etc/os-release` (falling back to `usr/lib/os-release`).
+
+Detection is fail-open: unreadable or malformed files produce one startup
+warning without blocking host collection, and the existing resource value is
+preserved. Set `resource_detection.enabled: false` for a fully static resource.
+Stable `host.id` reads the first valid machine ID from the mounted host root
+only when `host_id: true`; it is disabled by default because it is a persistent
+pseudonymous identifier. Explicit `host.id` always wins and requires no file
+read.
 
 Mount alternate roots read-only. Wisp does not write to procfs, sysfs, the
 host root, or cgroupfs. A typical container needs host PID visibility and
@@ -117,9 +138,10 @@ size; reassembly `memory` values are already bytes. No individual connection,
 address, or port is read or exported, keeping both privacy exposure and metric
 cardinality fixed.
 
-Every emitted series receives the configured agent resource attributes.
-Future host/container/workload resource detection will be additive and will
-have an explicit conflict policy; it is not inferred silently today.
+Every emitted series receives the configured agent resource attributes. Host
+detection only fills missing values and never replaces an explicit attribute.
+Container/workload attribution remains a separate future layer and will
+require its own bounded identity policy.
 
 ## Failure and compatibility behavior
 
@@ -137,6 +159,9 @@ have an explicit conflict policy; it is not inferred silently today.
 - Existing configurations remain compatible. Omitting all new fields retains
   the prior paths and interval behavior; the default collector set gains
   `disk`, `filesystem`, `cgroup`, `socket`, `uptime`, `pressure`, and `uname`.
+  Host metrics also gain missing standard OS/architecture attributes by
+  default, which intentionally changes their series identity once; explicit
+  resource attributes remain byte-for-byte authoritative.
 
 Wisp exposes the following fixed-cardinality self-observability:
 

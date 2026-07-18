@@ -67,8 +67,10 @@ second pipeline rewrite.
   counters for the visible network namespace — implemented;
 - collector duration/success gauges and transition-aware failure reporting —
   implemented;
+- mount-aware fail-open hostname, architecture, and OS resource detection with
+  explicit-only stable machine identity — implemented;
 - bounded workload cgroup enumeration after resource attribution;
-- host/container/workload resource detection;
+- container/workload resource attribution;
 - collector-specific time bounds and deeper failure injection.
 
 ## v0.12+ — eBPF and later profiles

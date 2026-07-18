@@ -17,6 +17,11 @@ sources:
     # sysfs_path: /host/sys
     # rootfs_path: /host/root
     # cgroupfs_path: /host/sys/fs/cgroup
+    # Hostname, OS, and architecture fill only missing resource attributes.
+    # Stable machine-id is privacy-sensitive and remains opt-in.
+    # resource_detection:
+    #   enabled: true
+    #   host_id: false
 
   # Prometheus/OpenMetrics pull scraping: static targets and/or file_sd.
   # scrape:

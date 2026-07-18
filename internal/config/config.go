@@ -73,12 +73,20 @@ type SourcesConfig struct {
 
 // HostSource configures node/host metric collection from /proc, /sys, cgroups.
 type HostSource struct {
-	Interval     Duration `yaml:"interval"`
-	Collectors   []string `yaml:"collectors"`
-	ProcFSPath   string   `yaml:"procfs_path"`
-	SysFSPath    string   `yaml:"sysfs_path"`
-	RootFSPath   string   `yaml:"rootfs_path"`
-	CgroupFSPath string   `yaml:"cgroupfs_path"`
+	Interval          Duration               `yaml:"interval"`
+	Collectors        []string               `yaml:"collectors"`
+	ProcFSPath        string                 `yaml:"procfs_path"`
+	SysFSPath         string                 `yaml:"sysfs_path"`
+	RootFSPath        string                 `yaml:"rootfs_path"`
+	CgroupFSPath      string                 `yaml:"cgroupfs_path"`
+	ResourceDetection *HostResourceDetection `yaml:"resource_detection"`
+}
+
+// HostResourceDetection controls fail-open host resource enrichment. Enabled
+// defaults to true when omitted. Stable machine identity remains explicit.
+type HostResourceDetection struct {
+	Enabled *bool `yaml:"enabled"`
+	HostID  bool  `yaml:"host_id"`
 }
 
 // ScrapeSource configures Prometheus/OpenMetrics pull scraping.
@@ -508,6 +516,14 @@ func (c *Config) Validate() error {
 					name,
 				)
 			}
+		}
+		if detection := host.ResourceDetection; detection != nil &&
+			detection.Enabled != nil &&
+			!*detection.Enabled &&
+			detection.HostID {
+			return fmt.Errorf(
+				"sources.host.resource_detection.host_id requires resource detection to be enabled",
+			)
 		}
 	}
 	if f := c.Sources.FileLog; f != nil {
