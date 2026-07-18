@@ -95,6 +95,14 @@ var (
 		"wisp_filelog_cri_partial_records_total",
 		"Unterminated CRI fragment sequences flushed while draining a rotated file.",
 	)
+	FileLogKubernetesEnriched = newCounter(
+		"wisp_filelog_kubernetes_enriched_records_total",
+		"File log records durably admitted with Kubernetes resource attributes derived from a pod log path.",
+	)
+	FileLogKubernetesMisses = newCounter(
+		"wisp_filelog_kubernetes_enrichment_misses_total",
+		"File log records durably admitted without path-derived Kubernetes attributes while enrichment was enabled.",
+	)
 )
 
 // gaugeFunc is a gauge whose current value is read from fn at scrape time.

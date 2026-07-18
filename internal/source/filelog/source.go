@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -49,10 +50,15 @@ type Config struct {
 	PollInterval   time.Duration
 	StartAt        string
 	Format         string
+	Kubernetes     *KubernetesConfig
 	MaxLineBytes   int
 	MaxBatchBytes  int
 	MaxReadBytes   int64
 	Resource       map[string]string
+}
+
+type KubernetesConfig struct {
+	PodLogsRoot string
 }
 
 type Source struct {
@@ -99,6 +105,22 @@ func New(cfg Config, logger *slog.Logger) (*Source, error) {
 	}
 	if cfg.Format != "text" && cfg.Format != "cri" {
 		return nil, fmt.Errorf("filelog: format must be text or cri")
+	}
+	if cfg.Kubernetes != nil {
+		if cfg.Format != "cri" {
+			return nil, fmt.Errorf("filelog: kubernetes enrichment requires CRI format")
+		}
+		if cfg.Kubernetes.PodLogsRoot == "" {
+			cfg.Kubernetes.PodLogsRoot = "/var/log/pods"
+		}
+		if !filepath.IsAbs(cfg.Kubernetes.PodLogsRoot) {
+			return nil, fmt.Errorf("filelog: kubernetes pod logs root must be an absolute non-root path")
+		}
+		root := filepath.Clean(cfg.Kubernetes.PodLogsRoot)
+		if root == string(filepath.Separator) {
+			return nil, fmt.Errorf("filelog: kubernetes pod logs root must be an absolute non-root path")
+		}
+		cfg.Kubernetes.PodLogsRoot = root
 	}
 	if cfg.MaxLineBytes < 1 || cfg.MaxBatchBytes < cfg.MaxLineBytes ||
 		cfg.MaxReadBytes < int64(cfg.MaxBatchBytes) {
@@ -382,7 +404,7 @@ func (s *Source) readTextFile(ctx context.Context, keyPath, readPath string, sta
 		if len(records) == 0 {
 			return nil
 		}
-		if err := s.emitRecords(ctx, records); err != nil {
+		if err := s.emitRecords(ctx, keyPath, records); err != nil {
 			return fmt.Errorf("%w: %w", errAdmission, err)
 		}
 		state.Offset = batchEnd
@@ -514,21 +536,12 @@ func newLogRecord(line []byte, path string, offset int64) *logspb.LogRecord {
 	}
 }
 
-func (s *Source) emitRecords(ctx context.Context, records []*logspb.LogRecord) error {
-	resource := &resourcepb.Resource{}
-	keys := make([]string, 0, len(s.cfg.Resource))
-	for key := range s.cfg.Resource {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	for _, key := range keys {
-		resource.Attributes = append(resource.Attributes, &commonpb.KeyValue{
-			Key: key,
-			Value: &commonpb.AnyValue{
-				Value: &commonpb.AnyValue_StringValue{StringValue: s.cfg.Resource[key]},
-			},
-		})
-	}
+func (s *Source) emitRecords(
+	ctx context.Context,
+	path string,
+	records []*logspb.LogRecord,
+) error {
+	resource, identityAttributes, enriched := s.resourceForPath(path)
 	request := &collogspb.ExportLogsServiceRequest{
 		ResourceLogs: []*logspb.ResourceLogs{{
 			Resource: resource,
@@ -544,7 +557,7 @@ func (s *Source) emitRecords(ctx context.Context, records []*logspb.LogRecord) e
 	if err != nil {
 		return fmt.Errorf("%w: filelog encode OTLP Logs: %v", pipeline.ErrPermanent, err)
 	}
-	identity, ok := signal.ResourceIdentity(s.cfg.Resource)
+	identity, ok := signal.ResourceIdentity(identityAttributes)
 	if !ok {
 		identity = nil
 	}
@@ -560,7 +573,70 @@ func (s *Source) emitRecords(ctx context.Context, records []*logspb.LogRecord) e
 	}
 	selfobs.FileLogRecords.Add(uint64(len(records)))
 	selfobs.FileLogBatches.Inc()
+	if s.cfg.Kubernetes != nil {
+		if enriched {
+			selfobs.FileLogKubernetesEnriched.Add(uint64(len(records)))
+		} else {
+			selfobs.FileLogKubernetesMisses.Add(uint64(len(records)))
+		}
+	}
 	return nil
+}
+
+func (s *Source) resourceForPath(
+	path string,
+) (*resourcepb.Resource, map[string]string, bool) {
+	stringValues := maps.Clone(s.cfg.Resource)
+	if stringValues == nil {
+		stringValues = make(map[string]string)
+	}
+	values := make(map[string]*commonpb.AnyValue, len(stringValues)+5)
+	for key, value := range stringValues {
+		values[key] = &commonpb.AnyValue{
+			Value: &commonpb.AnyValue_StringValue{StringValue: value},
+		}
+	}
+	enriched := false
+	if s.cfg.Kubernetes != nil {
+		metadata, ok := parseKubernetesPodLogPath(
+			s.cfg.Kubernetes.PodLogsRoot,
+			path,
+		)
+		if ok {
+			enriched = true
+			kubernetesStrings := map[string]string{
+				"k8s.namespace.name": metadata.namespace,
+				"k8s.pod.name":       metadata.podName,
+				"k8s.pod.uid":        metadata.podUID,
+				"k8s.container.name": metadata.container,
+			}
+			for key, value := range kubernetesStrings {
+				stringValues[key] = value
+				values[key] = &commonpb.AnyValue{
+					Value: &commonpb.AnyValue_StringValue{StringValue: value},
+				}
+			}
+			delete(stringValues, "k8s.container.restart_count")
+			values["k8s.container.restart_count"] = &commonpb.AnyValue{
+				Value: &commonpb.AnyValue_IntValue{
+					IntValue: metadata.restartCount,
+				},
+			}
+		}
+	}
+	resource := &resourcepb.Resource{}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		resource.Attributes = append(resource.Attributes, &commonpb.KeyValue{
+			Key:   key,
+			Value: values[key],
+		})
+	}
+	return resource, stringValues, enriched
 }
 
 func (s *Source) persistCheckpoint() error {

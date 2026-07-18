@@ -141,6 +141,12 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		{"filelog", cfg.Sources.FileLog != nil, func() (pipeline.Source, error) {
 			fc := cfg.Sources.FileLog
 			maxLineBytes, maxBatchBytes := effectiveFileLogBounds(fc, logRequestBytes)
+			var kubernetes *filelogsrc.KubernetesConfig
+			if fc.Kubernetes != nil {
+				kubernetes = &filelogsrc.KubernetesConfig{
+					PodLogsRoot: fc.Kubernetes.PodLogsRoot,
+				}
+			}
 			source, err := filelogsrc.New(filelogsrc.Config{
 				Include:        fc.Include,
 				Exclude:        fc.Exclude,
@@ -148,6 +154,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				PollInterval:   fc.PollInterval.Std(),
 				StartAt:        fc.StartAt,
 				Format:         fc.Format,
+				Kubernetes:     kubernetes,
 				MaxLineBytes:   maxLineBytes,
 				MaxBatchBytes:  maxBatchBytes,
 				MaxReadBytes:   fc.MaxReadBytes,
@@ -162,6 +169,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				"exclude_patterns", len(fc.Exclude),
 				"checkpoint_file", fc.CheckpointFile,
 				"format", source.Format(),
+				"kubernetes_enrichment", fc.Kubernetes != nil,
 				"max_line_bytes", maxLineBytes,
 				"max_batch_bytes", maxBatchBytes)
 			return source, nil

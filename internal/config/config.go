@@ -123,15 +123,21 @@ type OTLPSource struct {
 // FileLogSource configures bounded newline-delimited file tailing. Checkpoints
 // are required and advance only after durable log admission.
 type FileLogSource struct {
-	Include        []string `yaml:"include"`
-	Exclude        []string `yaml:"exclude"`
-	CheckpointFile string   `yaml:"checkpoint_file"`
-	PollInterval   Duration `yaml:"poll_interval"`
-	StartAt        string   `yaml:"start_at"`
-	Format         string   `yaml:"format"`
-	MaxLineBytes   int      `yaml:"max_line_bytes"`
-	MaxBatchBytes  int      `yaml:"max_batch_bytes"`
-	MaxReadBytes   int64    `yaml:"max_read_bytes_per_poll"`
+	Include        []string           `yaml:"include"`
+	Exclude        []string           `yaml:"exclude"`
+	CheckpointFile string             `yaml:"checkpoint_file"`
+	PollInterval   Duration           `yaml:"poll_interval"`
+	StartAt        string             `yaml:"start_at"`
+	Format         string             `yaml:"format"`
+	Kubernetes     *FileLogKubernetes `yaml:"kubernetes"`
+	MaxLineBytes   int                `yaml:"max_line_bytes"`
+	MaxBatchBytes  int                `yaml:"max_batch_bytes"`
+	MaxReadBytes   int64              `yaml:"max_read_bytes_per_poll"`
+}
+
+// FileLogKubernetes enables resource enrichment from kubelet's pod log path.
+type FileLogKubernetes struct {
+	PodLogsRoot string `yaml:"pod_logs_root"`
 }
 
 // EBPFSource configures kernel-side probes (Linux-only, requires CAP_BPF).
@@ -321,6 +327,15 @@ func (c *Config) Validate() error {
 		}
 		if f.Format != "" && f.Format != "text" && f.Format != "cri" {
 			return fmt.Errorf("sources.filelog.format must be text or cri")
+		}
+		if f.Kubernetes != nil {
+			if f.Format != "cri" {
+				return fmt.Errorf("sources.filelog.kubernetes requires format: cri")
+			}
+			root := f.Kubernetes.PodLogsRoot
+			if root != "" && (!filepath.IsAbs(root) || filepath.Clean(root) == string(filepath.Separator)) {
+				return fmt.Errorf("sources.filelog.kubernetes.pod_logs_root must be an absolute non-root path")
+			}
 		}
 		maxLine := f.MaxLineBytes
 		if maxLine == 0 {

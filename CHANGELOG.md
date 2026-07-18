@@ -23,6 +23,9 @@ versioning without treating `v1.0.0` as a schedule target.
 - Kubernetes CRI log framing with event timestamps, stdout/stderr metadata,
   bounded `P…F` assembly, malformed-input preservation, and restart-safe
   oversized-sequence handling.
+- opt-in Kubernetes resource enrichment from validated kubelet pod log paths,
+  including namespace, pod, UID, container, and integer restart count without
+  requiring Kubernetes API access.
 
 ### Changed
 
@@ -41,6 +44,9 @@ versioning without treating `v1.0.0` as a schedule target.
   at-least-once duplicate boundary.
 - filelog checkpoint v1 remains readable and is upgraded to v2 on write; v2
   records bounded CRI oversized-sequence continuation state.
+- path-derived Kubernetes identity overrides conflicting global resource
+  values for that file; enrichment misses preserve records and remain
+  observable.
 
 ## v0.7.0 — 2026-07-17
 

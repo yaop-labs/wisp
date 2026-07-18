@@ -74,6 +74,8 @@ sources:
   #   exclude: ["/var/log/pods/*/*/*.gz"]
   #   checkpoint_file: "/var/lib/wisp/filelog-checkpoints.json"
   #   format: cri
+  #   kubernetes:
+  #     pod_logs_root: /var/log/pods # change when kubelet podLogsDir is mounted elsewhere
 
   # Kernel-side RED/L7 metrics without instrumenting the app. Linux-only, CAP_BPF.
   # ebpf:

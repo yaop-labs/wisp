@@ -55,6 +55,8 @@ sources:
     exclude: ["/var/log/pods/*/*/*.gz"]
     checkpoint_file: "/var/lib/wisp/filelog-checkpoints.json"
     format: cri
+    kubernetes:
+      pod_logs_root: /var/log/pods
 ```
 
 CRI mode accepts the runtime framing contract:
@@ -86,6 +88,45 @@ Read `/var/log/pods/*/*/*.log` directly when lossless rotation recovery
 matters. `/var/log/containers/*.log` entries are normally symlinks; Wisp can
 tail their current targets, but cannot reliably find an old target inode by
 scanning the symlink directory after replacement.
+
+### Kubernetes resource enrichment
+
+The optional `kubernetes` block enables bounded, API-free enrichment from the
+kubelet pod log path. `pod_logs_root` defaults to `/var/log/pods` when the
+block is present and can point at a custom kubelet `podLogsDir` or its mounted
+location inside the Wisp container. It must be an absolute path other than
+the filesystem root. Enrichment requires `format: cri`.
+
+For a recognized path:
+
+```text
+<pod_logs_root>/<namespace>_<pod>_<pod UID>/<container>/<restart count>.log
+```
+
+Wisp adds these OTLP Resource attributes:
+
+- `k8s.namespace.name`;
+- `k8s.pod.name`;
+- `k8s.pod.uid`;
+- `k8s.container.name`;
+- `k8s.container.restart_count` as an integer.
+
+Path-derived values override conflicting global `resource.attributes` for
+that file because they describe the more specific telemetry resource. They
+also participate in the durable envelope's bounded string identity, except
+for the integer restart count.
+
+Wisp does not infer `service.name`, cluster, node, workload owner, labels,
+annotations, image, or container runtime identity from a filename. Those
+values require explicit configuration or a later Kubernetes API enrichment
+stage. An unrecognized or unsafe path does not drop the log; Wisp retains the
+base resource and increments the enrichment-miss counter.
+
+The attribute names follow the
+[OpenTelemetry Kubernetes resource semantic conventions](https://opentelemetry.io/docs/specs/semconv/resource/k8s/).
+Kubernetes documents `/var/log/pods` as the default and permits a custom
+`podLogsDir`; operators must set `pod_logs_root` to the path visible inside
+Wisp.
 
 ## Durability and duplicate boundary
 
@@ -174,8 +215,10 @@ Self-observability includes:
 - `wisp_filelog_cri_fragments_total`;
 - `wisp_filelog_cri_parse_errors_total`;
 - `wisp_filelog_cri_sequence_errors_total`;
-- `wisp_filelog_cri_partial_records_total`.
+- `wisp_filelog_cri_partial_records_total`;
+- `wisp_filelog_kubernetes_enriched_records_total`;
+- `wisp_filelog_kubernetes_enrichment_misses_total`.
 
 Multiline application parsing beyond CRI runtime fragments, content
-redaction, Kubernetes metadata enrichment, and journald collection remain
-separate increments.
+redaction, API-backed Kubernetes metadata enrichment, and journald collection
+remain separate increments.

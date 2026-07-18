@@ -15,6 +15,8 @@ sources:
     poll_interval: 500ms
     start_at: beginning
     format: cri
+    kubernetes:
+      pod_logs_root: /host/var/log/pods
     max_line_bytes: 65536
     max_batch_bytes: 262144
     max_read_bytes_per_poll: 1048576
@@ -31,7 +33,9 @@ resource:
 	if cfg.Sources.FileLog == nil ||
 		cfg.Sources.FileLog.CheckpointFile != "/var/lib/wisp/filelog.json" ||
 		cfg.Sources.FileLog.StartAt != "beginning" ||
-		cfg.Sources.FileLog.Format != "cri" {
+		cfg.Sources.FileLog.Format != "cri" ||
+		cfg.Sources.FileLog.Kubernetes == nil ||
+		cfg.Sources.FileLog.Kubernetes.PodLogsRoot != "/host/var/log/pods" {
 		t.Fatalf("filelog config=%+v", cfg.Sources.FileLog)
 	}
 }
@@ -56,6 +60,21 @@ func TestFileLogConfigRejectsUnsafeBounds(t *testing.T) {
 			name: "bad format",
 			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    format: docker-json",
 			want: "format",
+		},
+		{
+			name: "kubernetes requires CRI",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    kubernetes: {}",
+			want: "requires format: cri",
+		},
+		{
+			name: "relative pod logs root",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    format: cri\n    kubernetes:\n      pod_logs_root: var/log/pods",
+			want: "absolute non-root",
+		},
+		{
+			name: "filesystem root is too broad",
+			body: "include: [\"/tmp/*.log\"]\n    checkpoint_file: /tmp/cp\n    format: cri\n    kubernetes:\n      pod_logs_root: /",
+			want: "absolute non-root",
 		},
 		{
 			name: "batch below line",

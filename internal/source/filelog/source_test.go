@@ -13,18 +13,21 @@ import (
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/yaop-labs/wisp/internal/signal"
 )
 
 type logCapture struct {
-	bodies  []string
-	paths   []string
-	err     error
-	calls   int
-	failAt  int
-	records []*logspb.LogRecord
+	bodies    []string
+	paths     []string
+	err       error
+	calls     int
+	failAt    int
+	records   []*logspb.LogRecord
+	resources []*resourcepb.Resource
+	envelopes []signal.Envelope
 }
 
 func (c *logCapture) emit(_ context.Context, envelope signal.Envelope) error {
@@ -35,11 +38,16 @@ func (c *logCapture) emit(_ context.Context, envelope signal.Envelope) error {
 	if envelope.Kind != signal.Logs || envelope.Schema != signal.OTLPLogsSchema {
 		return errors.New("wrong envelope capability")
 	}
+	c.envelopes = append(c.envelopes, envelope)
 	var request collogspb.ExportLogsServiceRequest
 	if err := proto.Unmarshal(envelope.Payload, &request); err != nil {
 		return err
 	}
 	for _, resource := range request.ResourceLogs {
+		c.resources = append(
+			c.resources,
+			proto.Clone(resource.Resource).(*resourcepb.Resource),
+		)
 		for _, scope := range resource.ScopeLogs {
 			for _, record := range scope.LogRecords {
 				c.records = append(c.records, proto.Clone(record).(*logspb.LogRecord))
@@ -516,9 +524,13 @@ func TestFileLogCRIPreservesMalformedLine(t *testing.T) {
 
 func TestFileLogCRIFlushesPendingSequenceOnRotation(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "0.log")
-	rotated := filepath.Join(dir, "0.log.1")
+	root := filepath.Join(dir, "pods")
+	path := filepath.Join(root, "default_api_uid-123", "api", "0.log")
+	rotated := filepath.Join(filepath.Dir(path), "0.log.1")
 	checkpoints := filepath.Join(dir, "filelog.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(
 		path,
 		[]byte("2026-07-18T10:11:12Z stdout P orphan\n"),
@@ -527,6 +539,7 @@ func TestFileLogCRIFlushesPendingSequenceOnRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := newTestSourceWithFormat(t, path, checkpoints, "beginning", "cri")
+	source.cfg.Kubernetes = &KubernetesConfig{PodLogsRoot: root}
 	capture := &logCapture{}
 	source.SetLogsEmitter(capture.emit)
 	source.poll(context.Background())
@@ -547,6 +560,14 @@ func TestFileLogCRIFlushesPendingSequenceOnRotation(t *testing.T) {
 	}
 	if !attributeBool(capture.records[0], "wisp.cri.partial") {
 		t.Fatal("rotated incomplete CRI record lacks partial attribute")
+	}
+	if len(capture.resources) != 2 {
+		t.Fatalf("rotated resources=%d, want 2", len(capture.resources))
+	}
+	for i, resource := range capture.resources {
+		if got := resourceAttributeString(resource, "k8s.pod.name"); got != "api" {
+			t.Fatalf("rotated resource[%d] pod=%q, want api", i, got)
+		}
 	}
 }
 
@@ -599,6 +620,107 @@ func TestFileLogCRIFragmentSpanBoundMakesProgress(t *testing.T) {
 	}
 }
 
+func TestFileLogKubernetesPathEnrichesOTLPResourceAndEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "pods")
+	path := filepath.Join(
+		root,
+		"payments_checkout-7c8d9_275ecb36-5aa8-4c2a-9c47-d8bb681b9aff",
+		"api",
+		"2.log",
+	)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		path,
+		[]byte("2026-07-18T10:11:12Z stdout F paid\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestSourceWithFormat(
+		t,
+		path,
+		filepath.Join(dir, "filelog.json"),
+		"beginning",
+		"cri",
+	)
+	source.cfg.Kubernetes = &KubernetesConfig{PodLogsRoot: root}
+	source.cfg.Resource["k8s.pod.name"] = "configured-wrong-value"
+	capture := &logCapture{}
+	source.SetLogsEmitter(capture.emit)
+	source.poll(context.Background())
+
+	if got := capture.bodies; len(got) != 1 || got[0] != "paid" {
+		t.Fatalf("Kubernetes bodies=%v", got)
+	}
+	if len(capture.resources) != 1 {
+		t.Fatalf("resources=%d, want 1", len(capture.resources))
+	}
+	resource := capture.resources[0]
+	wantStrings := map[string]string{
+		"service.name":       "checkout",
+		"k8s.namespace.name": "payments",
+		"k8s.pod.name":       "checkout-7c8d9",
+		"k8s.pod.uid":        "275ecb36-5aa8-4c2a-9c47-d8bb681b9aff",
+		"k8s.container.name": "api",
+	}
+	for key, want := range wantStrings {
+		if got := resourceAttributeString(resource, key); got != want {
+			t.Fatalf("resource %s=%q, want %q", key, got, want)
+		}
+	}
+	if got := resourceAttributeInt(resource, "k8s.container.restart_count"); got != 2 {
+		t.Fatalf("restart count=%d, want 2", got)
+	}
+	if len(capture.envelopes) != 1 ||
+		capture.envelopes[0].Resource["k8s.pod.uid"] !=
+			"275ecb36-5aa8-4c2a-9c47-d8bb681b9aff" {
+		t.Fatalf("envelope resource=%v", capture.envelopes)
+	}
+	if _, exists := capture.envelopes[0].Resource["k8s.container.restart_count"]; exists {
+		t.Fatal("integer restart count leaked into string-only envelope identity")
+	}
+}
+
+func TestFileLogKubernetesEnrichmentMissPreservesRecord(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "pods")
+	path := filepath.Join(root, "custom.log")
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		path,
+		[]byte("2026-07-18T10:11:12Z stdout F retained\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestSourceWithFormat(
+		t,
+		path,
+		filepath.Join(dir, "filelog.json"),
+		"beginning",
+		"cri",
+	)
+	source.cfg.Kubernetes = &KubernetesConfig{PodLogsRoot: root}
+	capture := &logCapture{}
+	source.SetLogsEmitter(capture.emit)
+	source.poll(context.Background())
+
+	if got := capture.bodies; len(got) != 1 || got[0] != "retained" {
+		t.Fatalf("enrichment miss bodies=%v", got)
+	}
+	if got := resourceAttributeString(capture.resources[0], "service.name"); got != "checkout" {
+		t.Fatalf("base resource lost on enrichment miss: %q", got)
+	}
+	if got := resourceAttributeString(capture.resources[0], "k8s.pod.name"); got != "" {
+		t.Fatalf("unexpected Kubernetes metadata on miss: %q", got)
+	}
+}
+
 func attributeString(record *logspb.LogRecord, key string) string {
 	for _, attribute := range record.Attributes {
 		if attribute.Key == key {
@@ -624,6 +746,24 @@ func attributeBool(record *logspb.LogRecord, key string) bool {
 		}
 	}
 	return false
+}
+
+func resourceAttributeString(resource *resourcepb.Resource, key string) string {
+	for _, attribute := range resource.Attributes {
+		if attribute.Key == key {
+			return attribute.Value.GetStringValue()
+		}
+	}
+	return ""
+}
+
+func resourceAttributeInt(resource *resourcepb.Resource, key string) int64 {
+	for _, attribute := range resource.Attributes {
+		if attribute.Key == key {
+			return attribute.Value.GetIntValue()
+		}
+	}
+	return 0
 }
 
 func TestCheckpointRejectsUnknownFields(t *testing.T) {

@@ -34,8 +34,11 @@ second pipeline rewrite.
   rotate/truncate/restart — implemented;
 - Kubernetes CRI framing, timestamps, streams, and bounded partial assembly —
   implemented;
+- API-free Kubernetes pod/container resource enrichment from kubelet log paths
+  — implemented;
 - journald collection;
-- multiline parsing, timestamps, size bounds, redaction, and enrichment;
+- multiline parsing, non-CRI timestamps, size bounds, and redaction;
+- optional API-backed Kubernetes workload, node, label, and image enrichment;
 - documented at-least-once behavior and duplicate boundary.
 
 ## v0.10.x — trace processing depth

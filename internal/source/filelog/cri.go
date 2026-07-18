@@ -118,7 +118,7 @@ func (s *Source) readCRIFile(
 		if len(records) == 0 {
 			return nil
 		}
-		if err := s.emitRecords(ctx, records); err != nil {
+		if err := s.emitRecords(ctx, keyPath, records); err != nil {
 			return fmt.Errorf("%w: %w", errAdmission, err)
 		}
 		state.Offset = batchEnd
