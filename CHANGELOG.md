@@ -5,6 +5,10 @@ versioning without treating `v1.0.0` as a schedule target.
 
 ## Unreleased
 
+No changes yet.
+
+## v0.10.0 — 2026-07-18
+
 ### Added
 
 - versioned, checksummed, signal-neutral durability envelope with bounded
