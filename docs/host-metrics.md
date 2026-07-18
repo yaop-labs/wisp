@@ -11,7 +11,7 @@ healthy metrics from the same cycle.
 sources:
   host:
     interval: 15s
-    collectors: [cpu, load, memory, network, disk, filesystem, cgroup, uptime, pressure, uname]
+    collectors: [cpu, load, memory, network, socket, disk, filesystem, cgroup, uptime, pressure, uname]
     # For a containerized agent, point these at read-only host mounts.
     procfs_path: /host/proc
     sysfs_path: /host/sys
@@ -44,6 +44,9 @@ differ from the host UTS namespace if the container is isolated.
 | `memory` | selected `node_memory_*_bytes` | gauges, `bytes` |
 | `cpu` | `node_cpu_milliseconds_total` | monotonic sum, `ms`; `cpu`, `mode` |
 | `network` | `node_network_receive_bytes_total`, `node_network_transmit_bytes_total` | monotonic sums, `bytes`; `device` |
+| `socket` | `node_socket_used`, `node_socket_inuse`, `node_socket_orphan`, `node_socket_time_wait`, `node_socket_allocated` | integer gauges; `family`, `protocol`, `network.scope=visible_namespace` |
+| `socket` | `node_socket_memory_pages`, `node_socket_memory_bytes`, `node_socket_reassembly_memory_bytes` | integer gauges; pages or `bytes`; `family`, `protocol`, `network.scope` |
+| `socket` | allowlisted `node_netstat_tcp_*` and `node_netstat_udp_*` | monotonic counters except current established; `network.scope=visible_namespace` |
 | `disk` | `node_disk_reads_completed_total`, `node_disk_reads_merged_total`, `node_disk_writes_completed_total`, `node_disk_writes_merged_total` | monotonic sums; `device`, `major`, `minor` |
 | `disk` | `node_disk_read_bytes_total`, `node_disk_written_bytes_total` | monotonic sums, `bytes`; `device`, `major`, `minor` |
 | `disk` | `node_disk_read_milliseconds_total`, `node_disk_write_milliseconds_total`, `node_disk_io_milliseconds_total`, `node_disk_io_weighted_milliseconds_total` | monotonic sums, `ms`; `device`, `major`, `minor` |
@@ -103,6 +106,17 @@ that safely requires a cardinality budget, cgroup lifecycle handling, and
 container/workload resource attribution so a filesystem path is not exposed as
 an accidental identity.
 
+The socket collector reads aggregate `/proc/net/sockstat`, optional
+`sockstat6`, and an explicit TCP/UDP allowlist from `/proc/net/snmp`. Every
+series is marked `network.scope=visible_namespace`: inside a container this is
+the container's network namespace unless Wisp runs with host networking.
+Binding a host procfs path alone does not imply host network-namespace
+visibility because Linux exposes `/proc/net` through the reader's namespace.
+Socket memory reported in pages is also converted with the runtime kernel page
+size; reassembly `memory` values are already bytes. No individual connection,
+address, or port is read or exported, keeping both privacy exposure and metric
+cardinality fixed.
+
 Every emitted series receives the configured agent resource attributes.
 Future host/container/workload resource detection will be additive and will
 have an explicit conflict policy; it is not inferred silently today.
@@ -122,7 +136,7 @@ have an explicit conflict policy; it is not inferred silently today.
   synthesize missed host samples.
 - Existing configurations remain compatible. Omitting all new fields retains
   the prior paths and interval behavior; the default collector set gains
-  `disk`, `filesystem`, `cgroup`, `uptime`, `pressure`, and `uname`.
+  `disk`, `filesystem`, `cgroup`, `socket`, `uptime`, `pressure`, and `uname`.
 
 Wisp exposes the following fixed-cardinality self-observability:
 

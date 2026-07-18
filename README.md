@@ -23,9 +23,9 @@ Traces paths:
 - bounded journald collection through binary-safe Journal Export Format with
   durable cursors, filters, redaction, and explicit oversized-message handling;
 - bounded Linux host metrics from configurable virtual-filesystem roots,
-  including CPU, memory, network, load, uptime, PSI, UTS metadata, disk I/O,
-  local filesystem capacity, inode usage, mount health, and scoped cgroup v2
-  CPU/memory/PID/I/O limits and usage;
+  including CPU, memory, interfaces, aggregate socket/TCP/UDP health, load,
+  uptime, PSI, UTS metadata, disk I/O, local filesystem capacity, inode usage,
+  mount health, and scoped cgroup v2 CPU/memory/PID/I/O limits and usage;
 - relabel, counter-reset, and cardinality processors;
 - OTLP gRPC/HTTP export with retry, bounded crash-safe spool, and backpressure;
 - Reef TLS, mTLS, and bearer authentication on ingress and egress;

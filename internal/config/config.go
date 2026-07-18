@@ -475,7 +475,8 @@ func (c *Config) Validate() error {
 		validCollectors := map[string]struct{}{
 			"cgroup": {}, "cpu": {}, "disk": {}, "filesystem": {},
 			"load": {}, "memory": {}, "network": {},
-			"pressure": {}, "uname": {}, "uptime": {},
+			"pressure": {}, "socket": {}, "uname": {},
+			"uptime": {},
 		}
 		seen := make(map[string]struct{}, len(host.Collectors))
 		for _, collector := range host.Collectors {

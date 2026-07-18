@@ -63,10 +63,11 @@ second pipeline rewrite.
   per-mount error telemetry — implemented;
 - explicitly scoped cgroup v2 CPU, memory, swap, PID, event, and I/O telemetry
   for the configured cgroupfs root — implemented;
+- privacy-safe aggregate socket occupancy/memory and allowlisted TCP/UDP health
+  counters for the visible network namespace — implemented;
 - collector duration/success gauges and transition-aware failure reporting —
   implemented;
-- socket telemetry and bounded workload cgroup enumeration after resource
-  attribution;
+- bounded workload cgroup enumeration after resource attribution;
 - host/container/workload resource detection;
 - collector-specific time bounds and deeper failure injection.
 

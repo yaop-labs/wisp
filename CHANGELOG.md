@@ -18,6 +18,9 @@ versioning without treating `v1.0.0` as a schedule target.
 - explicitly scoped cgroup v2 CPU usage/throttling, quota, memory/swap,
   event, PID, and per-device I/O telemetry for the configured cgroupfs
   root, including explicit unlimited-limit gauges;
+- privacy-safe aggregate IPv4/IPv6 socket occupancy and memory plus allowlisted
+  TCP/UDP opens, resets, retransmits, errors, drops, and datagram counters for
+  the visible network namespace;
 - per-collector duration/success gauges plus host collection, unsupported,
   failure, emitted-series, and pipeline-admission counters;
 - deterministic procfs fixtures covering alternate mounts, malformed data,
@@ -34,7 +37,8 @@ versioning without treating `v1.0.0` as a schedule target.
   metadata, disk I/O, and local filesystems; missing optional support is
   classified separately from collection errors and repeated state logs are
   suppressed; cgroup v2 is added without claiming that a container namespace
-  root represents the entire host;
+  root represents the entire host, and socket telemetry likewise labels the
+  visible network namespace rather than assuming host networking;
 - remote, automounted, and FUSE filesystem `statfs` calls are excluded until a
   stuck-mount supervisor can bound blocking syscalls without accumulating
   abandoned workers.

@@ -173,6 +173,7 @@ func (s *Source) collectorRegistry() []collectorEntry {
 		{"memory", s.memory},
 		{"cpu", s.cpu},
 		{"network", s.network},
+		{"socket", s.socket},
 		{"disk", s.disk},
 		{"filesystem", s.filesystem},
 		{"cgroup", s.cgroup},
