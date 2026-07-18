@@ -70,6 +70,18 @@ This preserves OTLP fields and protobuf unknown fields across admission,
 restart, and export. Metric-only relabel/reset/cardinality processors never see
 or mutate log records.
 
+OTLP Traces use the same opaque protobuf boundary:
+
+```text
+kind:      traces
+schema:    opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest/v1
+encoding:  application/x-protobuf
+```
+
+One non-empty trace request is one envelope in `v0.8.x`. All resource/scope/span
+fields and protobuf unknown fields survive restart and export; trace-aware
+splitting and sampling are deliberately outside the v1 envelope contract.
+
 ## Signal-neutral queue
 
 The durability core accepts validated envelopes through a signal-neutral
@@ -85,9 +97,10 @@ fully drainable.
 The queue maintains global depth plus independent depth, optional byte limits,
 and pressure hysteresis for each signal. Capacity eviction is oldest-first.
 Drain is FIFO within each signal and round-robin across signals. A transient
-failure blocks only that signal for the current pass, so a metrics outage cannot
-strand logs (or the reverse). A permanent rejection is not admitted on the
-live path and is quarantined if discovered while draining an older record.
+failure blocks only that signal for the current pass, so an outage on metrics,
+logs, or traces cannot strand the other signal kinds. A permanent rejection is
+not admitted on the live path and is quarantined if discovered while draining
+an older record.
 
 Current self-observability retains the original aggregate gauges and adds:
 

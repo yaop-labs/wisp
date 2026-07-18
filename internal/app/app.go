@@ -188,12 +188,16 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		InitialBackoff: cfg.Exporter.OTLP.Retry.InitialBackoff.Std(),
 		MaxBackoff:     cfg.Exporter.OTLP.Retry.MaxBackoff.Std(),
 	}
-	// Metrics keep their typed adapter. Logs get an independent OTLP capability
-	// and both routes converge on one signal-neutral durability queue.
+	// Metrics keep their typed adapter. Logs and traces get independent OTLP
+	// capabilities and all routes converge on one signal-neutral durability
+	// queue.
 	var exporter pipeline.Exporter = retryexp.Wrap(otlpExp, retryConfig)
-	var logsSender signal.Sender
+	var (
+		logsSender   signal.Sender
+		tracesSender signal.Sender
+	)
 	if otlpRecv != nil {
-		logsExporter, logsErr := otlpexp.NewLogs(otlpexp.Config{
+		signalConfig := otlpexp.Config{
 			Endpoint:                       cfg.Exporter.OTLP.Endpoint,
 			Protocol:                       cfg.Exporter.OTLP.Protocol,
 			Timeout:                        cfg.Exporter.OTLP.Timeout.Std(),
@@ -203,14 +207,24 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			DangerAllowBearerOverPlaintext: cfg.Exporter.OTLP.DangerAllowBearerOverPlaintext,
 			Headers:                        cfg.Exporter.OTLP.Headers,
 			MaxLogRequestBytes:             logRequestBytes,
-		}, logger)
+		}
+		logsExporter, logsErr := otlpexp.NewLogs(signalConfig, logger)
 		if logsErr != nil {
 			_ = exporter.Close()
 			return nil, logsErr
 		}
 		logsSender = retryexp.WrapSender(logsExporter, retryConfig)
+		tracesExporter, tracesErr := otlpexp.NewTraces(signalConfig, logger)
+		if tracesErr != nil {
+			_ = exporter.Close()
+			_ = logsSender.Close()
+			return nil, tracesErr
+		}
+		tracesSender = retryexp.WrapSender(tracesExporter, retryConfig)
 		logger.Info("otlp logs request splitting configured",
 			"max_request_bytes", logRequestBytes)
+		logger.Info("otlp traces lossless passthrough configured",
+			"max_receiver_request_bytes", otlpwire.MaxReceiverRequestBytes)
 	}
 	var checks []readinessCheck
 	if cfg.Exporter.Spool.Dir != "" {
@@ -227,11 +241,17 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		if logsSender != nil {
 			routes[signal.Logs] = logsSender
 		}
+		if tracesSender != nil {
+			routes[signal.Traces] = tracesSender
+		}
 		router, routeErr := signalrouter.New(routes)
 		if routeErr != nil {
 			_ = exporter.Close()
 			if logsSender != nil {
 				_ = logsSender.Close()
+			}
+			if tracesSender != nil {
+				_ = tracesSender.Close()
 			}
 			return nil, routeErr
 		}
@@ -250,6 +270,12 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		if otlpRecv != nil {
 			otlpRecv.SetLogsEmitter(func(ctx context.Context, envelope signal.Envelope) error {
 				if queue.UnderSignalPressure(signal.Logs) {
+					return pipeline.ErrBackpressure
+				}
+				return queue.Accept(ctx, envelope)
+			})
+			otlpRecv.SetTracesEmitter(func(ctx context.Context, envelope signal.Envelope) error {
+				if queue.UnderSignalPressure(signal.Traces) {
 					return pipeline.ErrBackpressure
 				}
 				return queue.Accept(ctx, envelope)
@@ -300,7 +326,11 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		logger.Info("spool enabled", "dir", cfg.Exporter.Spool.Dir, "max_bytes", cfg.Exporter.Spool.MaxBytes, "max_age", cfg.Exporter.Spool.MaxAge.Std())
 	} else if otlpRecv != nil {
 		otlpRecv.SetLogsEmitter(logsSender.Send)
-		exporter = &exporterWithSignalClose{Exporter: exporter, sender: logsSender}
+		otlpRecv.SetTracesEmitter(tracesSender.Send)
+		exporter = &exporterWithSignalClose{
+			Exporter: exporter,
+			senders:  []signal.Sender{logsSender, tracesSender},
+		}
 	}
 	p.AddExporter(exporter)
 
@@ -346,11 +376,15 @@ func effectiveLogRequestBytes(cfg config.Config) int {
 
 type exporterWithSignalClose struct {
 	pipeline.Exporter
-	sender signal.Sender
+	senders []signal.Sender
 }
 
 func (e *exporterWithSignalClose) Close() error {
-	return errors.Join(e.Exporter.Close(), e.sender.Close())
+	err := e.Exporter.Close()
+	for i := len(e.senders) - 1; i >= 0; i-- {
+		err = errors.Join(err, e.senders[i].Close())
+	}
+	return err
 }
 
 // SetOperationalHandler installs the Gyre lifecycle handler. It must be called

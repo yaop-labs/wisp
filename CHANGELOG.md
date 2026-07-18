@@ -16,6 +16,8 @@ versioning without treating `v1.0.0` as a schedule target.
 - configurable per-signal spool limits and logs receive/rejection counters;
 - bounded OTLP Logs splitting with independent durable chunks and stable
   downstream delivery IDs.
+- lossless OTLP Traces receive/export over gRPC and HTTP/protobuf with durable
+  whole-request envelopes, stable delivery IDs, and partial-success counters.
 
 ### Changed
 
@@ -27,6 +29,8 @@ versioning without treating `v1.0.0` as a schedule target.
 - OTLP Logs bypass metric-only processors and share the same durability queue;
 - log request size is automatically constrained by its spool budget; legacy
   oversized log envelopes use compatibility splitting on export.
+- OTLP Traces bypass metric-only processors and use the shared signal-neutral
+  queue with independent pressure and capacity controls.
 
 ## v0.7.0 — 2026-07-17
 

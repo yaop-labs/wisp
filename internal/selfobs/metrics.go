@@ -35,32 +35,45 @@ func newCounter(name, help string) *Counter {
 
 // Agent self-metrics, incremented from the collection and export paths.
 var (
-	HostCollections        = newCounter("wisp_host_collections_total", "Host metric collection cycles completed.")
-	SamplesEmitted         = newCounter("wisp_samples_emitted_total", "Data points emitted by sources into the pipeline.")
-	BatchesExported        = newCounter("wisp_batches_exported_total", "Batches successfully shipped by an exporter.")
-	ExportFailures         = newCounter("wisp_export_failures_total", "Export attempts that returned an error.")
-	ScrapeErrors           = newCounter("wisp_scrape_errors_total", "Scrape attempts that failed (fetch or parse).")
-	CardinalityDropped     = newCounter("wisp_cardinality_dropped_total", "Series dropped by the per-target cardinality budget.")
-	CardinalityUntracked   = newCounter("wisp_cardinality_untracked_total", "New series admitted un-budgeted because the cardinality tracker is at capacity.")
-	LabelLimitDropped      = newCounter("wisp_label_limit_dropped_total", "Series dropped because they exceeded max_labels_per_series.")
-	ResetUntracked         = newCounter("wisp_reset_untracked_total", "Counter points not reset-normalized because the reset tracker is at capacity.")
-	ResetReordered         = newCounter("wisp_reset_reordered_total", "Counter points dropped because their timestamp was older than the series' last processed point and a correct reset offset could not be reconstructed.")
-	SpoolEnqueued          = newCounter("wisp_spool_enqueued_total", "Batches written to the on-disk spool after export failure.")
-	SpoolDrained           = newCounter("wisp_spool_drained_total", "Spooled batches successfully re-sent.")
-	SpoolDropped           = newCounter("wisp_spool_dropped_total", "Spooled batches dropped because the spool was full.")
-	SpoolQuarantined       = newCounter("wisp_spool_quarantined_total", "Spooled batches discarded on drain because downstream rejected them permanently (malformed/oversized).")
-	SpoolCorrupt           = newCounter("wisp_spool_corrupt_total", "Spooled files dropped on drain because they could not be decoded (torn by a crash mid-write, or bit-rot).")
-	SpoolExpired           = newCounter("wisp_spool_expired_total", "Spooled batches dropped because they exceeded max_age.")
-	SpoolWriteErrors       = newCounter("wisp_spool_write_errors_total", "Spool persistence failures (durability layer I/O errors).")
-	BackpressureShed       = newCounter("wisp_backpressure_shed_total", "Data points shed at the source because the spool crossed its high-water mark.")
-	OTLPReceived           = newCounter("wisp_otlp_received_total", "Data points received over the OTLP receiver.")
-	OTLPUnsupported        = newCounter("wisp_otlp_unsupported_total", "Received OTLP points dropped (explicit Histogram / Summary shapes are not modeled; send exponential histograms).")
-	OTLPLogsReceived       = newCounter("wisp_otlp_logs_received_total", "Log records durably accepted from OTLP.")
-	OTLPLogsChunks         = newCounter("wisp_otlp_logs_chunks_total", "Durable OTLP Logs chunks admitted after bounded splitting.")
-	OTLPLogsChunksExported = newCounter("wisp_otlp_logs_chunks_exported_total", "OTLP Logs chunks successfully exported downstream.")
-	OTLPLogsSplitRequests  = newCounter("wisp_otlp_logs_split_requests_total", "Incoming OTLP Logs requests split into multiple durable envelopes.")
-	OTLPLogsCompatSplits   = newCounter("wisp_otlp_logs_compat_split_attempts_total", "Exporter-side split attempts for legacy oversized Logs envelopes.")
-	OTLPLogsRejected       = newCounter("wisp_otlp_logs_rejected_total", "Log records rejected in an OTLP downstream partial-success response.")
+	HostCollections           = newCounter("wisp_host_collections_total", "Host metric collection cycles completed.")
+	SamplesEmitted            = newCounter("wisp_samples_emitted_total", "Data points emitted by sources into the pipeline.")
+	BatchesExported           = newCounter("wisp_batches_exported_total", "Batches successfully shipped by an exporter.")
+	ExportFailures            = newCounter("wisp_export_failures_total", "Export attempts that returned an error.")
+	ScrapeErrors              = newCounter("wisp_scrape_errors_total", "Scrape attempts that failed (fetch or parse).")
+	CardinalityDropped        = newCounter("wisp_cardinality_dropped_total", "Series dropped by the per-target cardinality budget.")
+	CardinalityUntracked      = newCounter("wisp_cardinality_untracked_total", "New series admitted un-budgeted because the cardinality tracker is at capacity.")
+	LabelLimitDropped         = newCounter("wisp_label_limit_dropped_total", "Series dropped because they exceeded max_labels_per_series.")
+	ResetUntracked            = newCounter("wisp_reset_untracked_total", "Counter points not reset-normalized because the reset tracker is at capacity.")
+	ResetReordered            = newCounter("wisp_reset_reordered_total", "Counter points dropped because their timestamp was older than the series' last processed point and a correct reset offset could not be reconstructed.")
+	SpoolEnqueued             = newCounter("wisp_spool_enqueued_total", "Batches written to the on-disk spool after export failure.")
+	SpoolDrained              = newCounter("wisp_spool_drained_total", "Spooled batches successfully re-sent.")
+	SpoolDropped              = newCounter("wisp_spool_dropped_total", "Spooled batches dropped because the spool was full.")
+	SpoolQuarantined          = newCounter("wisp_spool_quarantined_total", "Spooled batches discarded on drain because downstream rejected them permanently (malformed/oversized).")
+	SpoolCorrupt              = newCounter("wisp_spool_corrupt_total", "Spooled files dropped on drain because they could not be decoded (torn by a crash mid-write, or bit-rot).")
+	SpoolExpired              = newCounter("wisp_spool_expired_total", "Spooled batches dropped because they exceeded max_age.")
+	SpoolWriteErrors          = newCounter("wisp_spool_write_errors_total", "Spool persistence failures (durability layer I/O errors).")
+	BackpressureShed          = newCounter("wisp_backpressure_shed_total", "Data points shed at the source because the spool crossed its high-water mark.")
+	OTLPReceived              = newCounter("wisp_otlp_received_total", "Data points received over the OTLP receiver.")
+	OTLPUnsupported           = newCounter("wisp_otlp_unsupported_total", "Received OTLP points dropped (explicit Histogram / Summary shapes are not modeled; send exponential histograms).")
+	OTLPLogsReceived          = newCounter("wisp_otlp_logs_received_total", "Log records durably accepted from OTLP.")
+	OTLPLogsChunks            = newCounter("wisp_otlp_logs_chunks_total", "Durable OTLP Logs chunks admitted after bounded splitting.")
+	OTLPLogsChunksExported    = newCounter("wisp_otlp_logs_chunks_exported_total", "OTLP Logs chunks successfully exported downstream.")
+	OTLPLogsSplitRequests     = newCounter("wisp_otlp_logs_split_requests_total", "Incoming OTLP Logs requests split into multiple durable envelopes.")
+	OTLPLogsCompatSplits      = newCounter("wisp_otlp_logs_compat_split_attempts_total", "Exporter-side split attempts for legacy oversized Logs envelopes.")
+	OTLPLogsRejected          = newCounter("wisp_otlp_logs_rejected_total", "Log records rejected in an OTLP downstream partial-success response.")
+	OTLPTraceSpansReceived    = newCounter("wisp_otlp_trace_spans_received_total", "Trace spans durably accepted from OTLP.")
+	OTLPTraceRequestsReceived = newCounter(
+		"wisp_otlp_trace_requests_received_total",
+		"Non-empty OTLP Traces requests admitted as durable envelopes.",
+	)
+	OTLPTraceRequestsExported = newCounter(
+		"wisp_otlp_trace_requests_exported_total",
+		"Durable OTLP Traces requests successfully exported downstream.",
+	)
+	OTLPTraceSpansRejected = newCounter(
+		"wisp_otlp_trace_spans_rejected_total",
+		"Trace spans rejected in an OTLP downstream partial-success response.",
+	)
 )
 
 // gaugeFunc is a gauge whose current value is read from fn at scrape time.

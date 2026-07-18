@@ -4,19 +4,20 @@ Wisp is the edge observability agent for the YAOP stack. It collects and
 processes telemetry close to its source, persists batches across downstream
 outages, and exports them to Coral over OTLP.
 
-The current implementation is metrics-first with a lossless OTLP Logs path:
+The current implementation has a typed metrics path plus lossless OTLP Logs
+and Traces passthrough:
 
 - Prometheus/OpenMetrics scraping with static, file, DNS, and Kubernetes
   discovery;
-- OTLP metrics and logs receive/export over gRPC and HTTP/protobuf;
+- OTLP metrics, logs, and traces receive/export over gRPC and HTTP/protobuf;
 - Linux host metrics from `/proc`;
 - relabel, counter-reset, and cardinality processors;
 - OTLP gRPC/HTTP export with retry, bounded crash-safe spool, and backpressure;
 - Reef TLS, mTLS, and bearer authentication on ingress and egress;
 - Gyre lifecycle, readiness, status, and generation-aware reload.
 
-File/journald/CRI log collection, traces, and the actual eBPF backend are
-planned, not silently simulated.
+File/journald/CRI log collection, trace-aware batching/sampling, and the actual
+eBPF backend are planned, not silently simulated.
 See [the roadmap](docs/ROADMAP.md) and
 [the signal extensibility ADR](docs/adr/0001-signal-extensible-core.md).
 

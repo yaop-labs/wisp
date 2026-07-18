@@ -19,7 +19,7 @@ patch releases when that improves reviewability or operational safety.
 - disk-format migration from metric-only spool records — implemented;
 - signal-neutral queue, per-signal quotas, pressure, fair scheduling, and
   self-observability — implemented;
-- OTLP Logs receiver/exporter registration — implemented; traces remain;
+- lossless OTLP Logs and Traces receiver/exporter registration — implemented;
 - bounded OTLP Logs splitting, stable delivery identity, and
   permanent/transient response semantics — implemented.
 
@@ -33,9 +33,9 @@ second pipeline rewrite.
 - multiline parsing, timestamps, size bounds, redaction, and enrichment;
 - documented at-least-once behavior and duplicate boundary.
 
-## v0.10.x — trace path
+## v0.10.x — trace processing depth
 
-- lossless OTLP trace passthrough and correlation attributes;
+- correlation validation and explicit resource enrichment;
 - oversized-trace handling and fair batching;
 - explicit optional sampling, with no hidden semantic rewriting.
 

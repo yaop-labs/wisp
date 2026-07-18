@@ -1,6 +1,6 @@
 // Package otlp is the OTLP receive source. Metrics are converted into Wisp's
-// typed pipeline model; logs retain their protobuf representation and enter the
-// signal-neutral durability path directly.
+// typed pipeline model; logs and traces retain their protobuf representation
+// and enter the signal-neutral durability path directly.
 package otlp
 
 import (
@@ -26,7 +26,9 @@ import (
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 
 	"github.com/yaop-labs/wisp/internal/model"
 	"github.com/yaop-labs/wisp/internal/otlpwire"
@@ -50,7 +52,8 @@ type Options struct {
 	MaxLogRequestBytes             int
 }
 
-// Receiver serves OTLP metrics over gRPC and/or HTTP.
+// Receiver serves OTLP metrics and enabled opaque signal capabilities over
+// gRPC and/or HTTP.
 type Receiver struct {
 	grpcAddr string
 	httpAddr string
@@ -67,6 +70,7 @@ type Receiver struct {
 	// logsEmit bypasses metric processors and preserves the OTLP protobuf as an
 	// opaque durable envelope.
 	logsEmit           func(context.Context, signal.Envelope) error
+	tracesEmit         func(context.Context, signal.Envelope) error
 	maxLogRequestBytes int
 
 	grpcSrv *grpc.Server
@@ -80,6 +84,12 @@ type Receiver struct {
 // before Start.
 func (r *Receiver) SetLogsEmitter(emit func(context.Context, signal.Envelope) error) {
 	r.logsEmit = emit
+}
+
+// SetTracesEmitter enables OTLP Traces on the same listeners. It must be called
+// before Start.
+func (r *Receiver) SetTracesEmitter(emit func(context.Context, signal.Envelope) error) {
+	r.tracesEmit = emit
 }
 
 // New builds a Receiver from opts, materializing Reef's TLS and bearer layers
@@ -167,6 +177,9 @@ func (r *Receiver) Start(ctx context.Context, emit func(context.Context, model.B
 		if r.logsEmit != nil {
 			collogspb.RegisterLogsServiceServer(r.grpcSrv, &grpcLogsService{r: r})
 		}
+		if r.tracesEmit != nil {
+			coltracepb.RegisterTraceServiceServer(r.grpcSrv, &grpcTracesService{r: r})
+		}
 		go func() { _ = r.grpcSrv.Serve(ln) }()
 		r.logger.Info("otlp receiver grpc listening", "addr", ln.Addr().String(), "tls", secure)
 	}
@@ -185,6 +198,9 @@ func (r *Receiver) Start(ctx context.Context, emit func(context.Context, model.B
 		mux.HandleFunc("/v1/metrics", r.handleHTTP)
 		if r.logsEmit != nil {
 			mux.HandleFunc("/v1/logs", r.handleLogsHTTP)
+		}
+		if r.tracesEmit != nil {
+			mux.HandleFunc("/v1/traces", r.handleTracesHTTP)
 		}
 		r.httpLn = ln
 		r.httpSrv = &http.Server{
@@ -248,11 +264,20 @@ func (r *Receiver) ingestLogs(ctx context.Context, request *collogspb.ExportLogs
 }
 
 func commonLogsResource(request *collogspb.ExportLogsServiceRequest) map[string]string {
+	return commonResourceIdentity(len(request.ResourceLogs), func(i int) *resourcepb.Resource {
+		if request.ResourceLogs[i] == nil {
+			return nil
+		}
+		return request.ResourceLogs[i].Resource
+	})
+}
+
+func commonResourceIdentity(count int, resourceAt func(int) *resourcepb.Resource) map[string]string {
 	var common map[string]string
-	for i, resourceLogs := range request.ResourceLogs {
+	for i := range count {
 		attributes := make(map[string]string)
-		if resourceLogs != nil && resourceLogs.Resource != nil {
-			for _, attribute := range resourceLogs.Resource.Attributes {
+		if resource := resourceAt(i); resource != nil {
+			for _, attribute := range resource.Attributes {
 				if attribute == nil {
 					continue
 				}
@@ -283,6 +308,57 @@ func commonLogsResource(request *collogspb.ExportLogsServiceRequest) map[string]
 		}
 	}
 	return common
+}
+
+func (r *Receiver) ingestTraces(ctx context.Context, request *coltracepb.ExportTraceServiceRequest) error {
+	if r.tracesEmit == nil {
+		return fmt.Errorf("%w: OTLP Traces capability is disabled", pipeline.ErrPermanent)
+	}
+	spans := traceSpanCount(request)
+	if spans == 0 {
+		return nil
+	}
+	payload, err := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
+	if err != nil {
+		return fmt.Errorf("%w: encode OTLP Traces: %v", pipeline.ErrPermanent, err)
+	}
+	envelope, err := signal.New(
+		signal.Traces, signal.OTLPTracesSchema, signal.OTLPProtobufEncoding,
+		payload, commonTracesResource(request),
+	)
+	if err != nil {
+		return err
+	}
+	if err := r.tracesEmit(ctx, envelope); err != nil {
+		return err
+	}
+	selfobs.OTLPTraceSpansReceived.Add(uint64(spans))
+	selfobs.OTLPTraceRequestsReceived.Inc()
+	return nil
+}
+
+func traceSpanCount(request *coltracepb.ExportTraceServiceRequest) int {
+	count := 0
+	for _, resourceSpans := range request.ResourceSpans {
+		if resourceSpans == nil {
+			continue
+		}
+		for _, scopeSpans := range resourceSpans.ScopeSpans {
+			if scopeSpans != nil {
+				count += len(scopeSpans.Spans)
+			}
+		}
+	}
+	return count
+}
+
+func commonTracesResource(request *coltracepb.ExportTraceServiceRequest) map[string]string {
+	return commonResourceIdentity(len(request.ResourceSpans), func(i int) *resourcepb.Resource {
+		if request.ResourceSpans[i] == nil {
+			return nil
+		}
+		return request.ResourceSpans[i].Resource
+	})
 }
 
 // Stop gracefully shuts the servers down.
@@ -356,6 +432,25 @@ type grpcService struct {
 type grpcLogsService struct {
 	collogspb.UnimplementedLogsServiceServer
 	r *Receiver
+}
+
+type grpcTracesService struct {
+	coltracepb.UnimplementedTraceServiceServer
+	r *Receiver
+}
+
+func (s *grpcTracesService) Export(ctx context.Context, request *coltracepb.ExportTraceServiceRequest) (*coltracepb.ExportTraceServiceResponse, error) {
+	if err := s.r.ingestTraces(ctx, request); err != nil {
+		switch {
+		case errors.Is(err, pipeline.ErrBackpressure):
+			return nil, status.Error(codes.ResourceExhausted, "wisp backpressure: traces spool above high-water mark")
+		case errors.Is(err, pipeline.ErrPermanent):
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		default:
+			return nil, status.Error(codes.Unavailable, "wisp traces pipeline unavailable")
+		}
+	}
+	return &coltracepb.ExportTraceServiceResponse{}, nil
 }
 
 func (s *grpcLogsService) Export(ctx context.Context, request *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
@@ -442,6 +537,45 @@ func (r *Receiver) handleLogsHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	response, _ := proto.Marshal(&collogspb.ExportLogsServiceResponse{})
+	w.Header().Set("Content-Type", signal.OTLPProtobufEncoding)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(response)
+}
+
+func (r *Receiver) handleTracesHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxBodyBytes))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "OTLP Traces request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var request coltracepb.ExportTraceServiceRequest
+	if err := proto.Unmarshal(body, &request); err != nil {
+		http.Error(w, "bad protobuf: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := r.ingestTraces(req.Context(), &request); err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, pipeline.ErrBackpressure):
+			http.Error(w, "wisp backpressure: traces spool above high-water mark", http.StatusTooManyRequests)
+		case errors.Is(err, pipeline.ErrPermanent):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		default:
+			http.Error(w, "traces pipeline unavailable", http.StatusServiceUnavailable)
+		}
+		return
+	}
+	response, _ := proto.Marshal(&coltracepb.ExportTraceServiceResponse{})
 	w.Header().Set("Content-Type", signal.OTLPProtobufEncoding)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(response)

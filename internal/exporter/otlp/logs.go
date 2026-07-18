@@ -35,6 +35,8 @@ type logsTransport interface {
 	close() error
 }
 
+const maxOTLPResponseBytes = 1 << 20
+
 // LogsExporter forwards opaque OTLP Logs envelopes without converting log
 // records into Wisp's metric model.
 type LogsExporter struct {
@@ -148,7 +150,7 @@ func (e *LogsExporter) Send(ctx context.Context, envelope signal.Envelope) error
 			selfobs.OTLPLogsRejected.Add(uint64(partial.RejectedLogRecords))
 			e.logger.Warn("otlp logs downstream partial success",
 				"rejected_log_records", partial.RejectedLogRecords,
-				"message", boundedLogText(partial.ErrorMessage, 1024),
+				"message", boundedOTLPText(partial.ErrorMessage, 1024),
 				"envelope_id", deliveryID)
 		}
 		selfobs.OTLPLogsChunksExported.Inc()
@@ -224,7 +226,7 @@ func (t *httpLogsTransport) sendLogs(ctx context.Context, request *collogspb.Exp
 		}
 		return nil, err
 	}
-	data, err := io.ReadAll(response.Body)
+	data, err := readBoundedOTLPResponse(response.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
@@ -238,6 +240,17 @@ func (t *httpLogsTransport) sendLogs(ctx context.Context, request *collogspb.Exp
 }
 
 func (t *httpLogsTransport) close() error { return t.edge.Close() }
+
+func readBoundedOTLPResponse(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxOTLPResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxOTLPResponseBytes {
+		return nil, fmt.Errorf("OTLP response exceeds %d bytes", maxOTLPResponseBytes)
+	}
+	return data, nil
+}
 
 func otlpHTTPURL(endpoint, path string, tlsEnabled bool) string {
 	target := strings.TrimRight(endpoint, "/")
@@ -254,7 +267,7 @@ func otlpHTTPURL(endpoint, path string, tlsEnabled bool) string {
 	return target + path
 }
 
-func boundedLogText(value string, maxBytes int) string {
+func boundedOTLPText(value string, maxBytes int) string {
 	value = strings.ToValidUTF8(value, "\uFFFD")
 	if len(value) <= maxBytes {
 		return value
