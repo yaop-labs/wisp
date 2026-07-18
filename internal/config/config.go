@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/yaop-labs/reef/bearer"
@@ -57,10 +58,11 @@ type SelfMetricsConfig struct {
 
 // SourcesConfig enables the collection sources. A nil pointer means disabled.
 type SourcesConfig struct {
-	Host   *HostSource   `yaml:"host"`
-	Scrape *ScrapeSource `yaml:"scrape"`
-	OTLP   *OTLPSource   `yaml:"otlp"`
-	EBPF   *EBPFSource   `yaml:"ebpf"`
+	Host    *HostSource    `yaml:"host"`
+	Scrape  *ScrapeSource  `yaml:"scrape"`
+	OTLP    *OTLPSource    `yaml:"otlp"`
+	FileLog *FileLogSource `yaml:"filelog"`
+	EBPF    *EBPFSource    `yaml:"ebpf"`
 }
 
 // HostSource configures node/host metric collection from /proc, /sys, cgroups.
@@ -116,6 +118,19 @@ type OTLPSource struct {
 	Auth                           *bearer.ServerConfig  `yaml:"auth"`
 	Insecure                       bool                  `yaml:"insecure"`
 	DangerAllowBearerOverPlaintext bool                  `yaml:"danger_allow_bearer_over_plaintext"`
+}
+
+// FileLogSource configures bounded newline-delimited file tailing. Checkpoints
+// are required and advance only after durable log admission.
+type FileLogSource struct {
+	Include        []string `yaml:"include"`
+	Exclude        []string `yaml:"exclude"`
+	CheckpointFile string   `yaml:"checkpoint_file"`
+	PollInterval   Duration `yaml:"poll_interval"`
+	StartAt        string   `yaml:"start_at"`
+	MaxLineBytes   int      `yaml:"max_line_bytes"`
+	MaxBatchBytes  int      `yaml:"max_batch_bytes"`
+	MaxReadBytes   int64    `yaml:"max_read_bytes_per_poll"`
 }
 
 // EBPFSource configures kernel-side probes (Linux-only, requires CAP_BPF).
@@ -282,6 +297,49 @@ func (c *Config) Validate() error {
 	if o := c.Sources.OTLP; o != nil && o.GRPC == "" && o.HTTP == "" {
 		return fmt.Errorf("sources.otlp: at least one of grpc or http address is required")
 	}
+	if f := c.Sources.FileLog; f != nil {
+		if len(f.Include) == 0 {
+			return fmt.Errorf("sources.filelog.include requires at least one path or glob")
+		}
+		for _, pattern := range append(append([]string(nil), f.Include...), f.Exclude...) {
+			if pattern == "" {
+				return fmt.Errorf("sources.filelog: empty path pattern")
+			}
+			if _, err := filepath.Match(pattern, pattern); err != nil {
+				return fmt.Errorf("sources.filelog: invalid pattern %q: %w", pattern, err)
+			}
+		}
+		if f.CheckpointFile == "" {
+			return fmt.Errorf("sources.filelog.checkpoint_file is required")
+		}
+		if f.PollInterval.Std() != 0 && f.PollInterval.Std() < 100*time.Millisecond {
+			return fmt.Errorf("sources.filelog.poll_interval must be at least 100ms")
+		}
+		if f.StartAt != "" && f.StartAt != "beginning" && f.StartAt != "end" {
+			return fmt.Errorf("sources.filelog.start_at must be beginning or end")
+		}
+		maxLine := f.MaxLineBytes
+		if maxLine == 0 {
+			maxLine = 256 << 10
+		}
+		if maxLine < 1 || maxLine > 1<<20 {
+			return fmt.Errorf("sources.filelog.max_line_bytes must be between 1 and %d", 1<<20)
+		}
+		maxBatch := f.MaxBatchBytes
+		if maxBatch == 0 {
+			maxBatch = 512 << 10
+		}
+		if maxBatch < maxLine || maxBatch > otlpwire.DefaultMaxRequestBytes {
+			return fmt.Errorf("sources.filelog.max_batch_bytes must be between max_line_bytes and %d", otlpwire.DefaultMaxRequestBytes)
+		}
+		maxRead := f.MaxReadBytes
+		if maxRead == 0 {
+			maxRead = 4 << 20
+		}
+		if maxRead < int64(maxBatch) || maxRead > 64<<20 {
+			return fmt.Errorf("sources.filelog.max_read_bytes_per_poll must be between max_batch_bytes and %d", 64<<20)
+		}
+	}
 	// Reef owns the transport-security contract. Disabled blocks are validated
 	// here without filesystem I/O; enabled blocks are fully materialized (and
 	// their files checked) when app wiring builds the edge.
@@ -345,6 +403,9 @@ func (s SourcesConfig) Enabled() []string {
 	}
 	if s.OTLP != nil {
 		names = append(names, "otlp")
+	}
+	if s.FileLog != nil {
+		names = append(names, "filelog")
 	}
 	if s.EBPF != nil {
 		names = append(names, "ebpf")

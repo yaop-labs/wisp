@@ -18,6 +18,8 @@ versioning without treating `v1.0.0` as a schedule target.
   downstream delivery IDs.
 - lossless OTLP Traces receive/export over gRPC and HTTP/protobuf with durable
   whole-request envelopes, stable delivery IDs, and partial-success counters.
+- bounded Linux file log tailing with device/inode identity, atomic versioned
+  checkpoints, restart/rotation recovery, and explicit oversized-line policy.
 
 ### Changed
 
@@ -31,6 +33,9 @@ versioning without treating `v1.0.0` as a schedule target.
   oversized log envelopes use compatibility splitting on export.
 - OTLP Traces bypass metric-only processors and use the shared signal-neutral
   queue with independent pressure and capacity controls.
+- file checkpoints advance only after downstream delivery or spool fsync, so
+  admission failures retry without data loss and crashes have an explicit
+  at-least-once duplicate boundary.
 
 ## v0.7.0 — 2026-07-17
 

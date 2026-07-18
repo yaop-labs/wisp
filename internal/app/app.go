@@ -32,6 +32,7 @@ import (
 	"github.com/yaop-labs/wisp/internal/selfobs"
 	"github.com/yaop-labs/wisp/internal/signal"
 	ebpfsrc "github.com/yaop-labs/wisp/internal/source/ebpf"
+	filelogsrc "github.com/yaop-labs/wisp/internal/source/filelog"
 	hostsrc "github.com/yaop-labs/wisp/internal/source/host"
 	otlprecv "github.com/yaop-labs/wisp/internal/source/otlp"
 	scrapesrc "github.com/yaop-labs/wisp/internal/source/scrape"
@@ -99,8 +100,9 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	// and constructor). Adding a source is one entry here plus its config field
 	// and config.SourcesConfig.Enabled - not scattered if-blocks.
 	var (
-		scrapeSrc *scrapesrc.Source
-		otlpRecv  *otlprecv.Receiver
+		scrapeSrc  *scrapesrc.Source
+		otlpRecv   *otlprecv.Receiver
+		filelogSrc *filelogsrc.Source
 	)
 	registry := []struct {
 		name    string
@@ -135,6 +137,32 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			}, logger)
 			otlpRecv = receiver
 			return receiver, err
+		}},
+		{"filelog", cfg.Sources.FileLog != nil, func() (pipeline.Source, error) {
+			fc := cfg.Sources.FileLog
+			maxLineBytes, maxBatchBytes := effectiveFileLogBounds(fc, logRequestBytes)
+			source, err := filelogsrc.New(filelogsrc.Config{
+				Include:        fc.Include,
+				Exclude:        fc.Exclude,
+				CheckpointFile: fc.CheckpointFile,
+				PollInterval:   fc.PollInterval.Std(),
+				StartAt:        fc.StartAt,
+				MaxLineBytes:   maxLineBytes,
+				MaxBatchBytes:  maxBatchBytes,
+				MaxReadBytes:   fc.MaxReadBytes,
+				Resource:       maps.Clone(cfg.Resource.Attributes),
+			}, logger)
+			if err != nil {
+				return nil, err
+			}
+			filelogSrc = source
+			logger.Info("filelog source enabled",
+				"include_patterns", len(fc.Include),
+				"exclude_patterns", len(fc.Exclude),
+				"checkpoint_file", fc.CheckpointFile,
+				"max_line_bytes", maxLineBytes,
+				"max_batch_bytes", maxBatchBytes)
+			return source, nil
 		}},
 		{"ebpf", cfg.Sources.EBPF != nil, func() (pipeline.Source, error) {
 			ok, reason := ebpfsrc.Available()
@@ -196,7 +224,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		logsSender   signal.Sender
 		tracesSender signal.Sender
 	)
-	if otlpRecv != nil {
+	if otlpRecv != nil || filelogSrc != nil {
 		signalConfig := otlpexp.Config{
 			Endpoint:                       cfg.Exporter.OTLP.Endpoint,
 			Protocol:                       cfg.Exporter.OTLP.Protocol,
@@ -214,6 +242,18 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			return nil, logsErr
 		}
 		logsSender = retryexp.WrapSender(logsExporter, retryConfig)
+	}
+	if otlpRecv != nil {
+		signalConfig := otlpexp.Config{
+			Endpoint:                       cfg.Exporter.OTLP.Endpoint,
+			Protocol:                       cfg.Exporter.OTLP.Protocol,
+			Timeout:                        cfg.Exporter.OTLP.Timeout.Std(),
+			TLS:                            cfg.Exporter.OTLP.TLS,
+			Auth:                           cfg.Exporter.OTLP.Auth,
+			Insecure:                       cfg.Exporter.OTLP.Insecure,
+			DangerAllowBearerOverPlaintext: cfg.Exporter.OTLP.DangerAllowBearerOverPlaintext,
+			Headers:                        cfg.Exporter.OTLP.Headers,
+		}
 		tracesExporter, tracesErr := otlpexp.NewTraces(signalConfig, logger)
 		if tracesErr != nil {
 			_ = exporter.Close()
@@ -221,10 +261,12 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			return nil, tracesErr
 		}
 		tracesSender = retryexp.WrapSender(tracesExporter, retryConfig)
-		logger.Info("otlp logs request splitting configured",
-			"max_request_bytes", logRequestBytes)
 		logger.Info("otlp traces lossless passthrough configured",
 			"max_receiver_request_bytes", otlpwire.MaxReceiverRequestBytes)
+	}
+	if logsSender != nil {
+		logger.Info("otlp logs request splitting configured",
+			"max_request_bytes", logRequestBytes)
 	}
 	var checks []readinessCheck
 	if cfg.Exporter.Spool.Dir != "" {
@@ -281,6 +323,14 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 				return queue.Accept(ctx, envelope)
 			})
 		}
+		if filelogSrc != nil {
+			filelogSrc.SetLogsEmitter(func(ctx context.Context, envelope signal.Envelope) error {
+				if queue.UnderSignalPressure(signal.Logs) {
+					return pipeline.ErrBackpressure
+				}
+				return queue.Accept(ctx, envelope)
+			})
+		}
 		// Close the backpressure loop: when the spool crosses its high-water
 		// mark, emit sheds at the source (pull) / returns 429 (push).
 		p.SetPressure(sp.UnderPressure)
@@ -324,13 +374,30 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			return out
 		})
 		logger.Info("spool enabled", "dir", cfg.Exporter.Spool.Dir, "max_bytes", cfg.Exporter.Spool.MaxBytes, "max_age", cfg.Exporter.Spool.MaxAge.Std())
-	} else if otlpRecv != nil {
-		otlpRecv.SetLogsEmitter(logsSender.Send)
-		otlpRecv.SetTracesEmitter(tracesSender.Send)
+	} else if logsSender != nil {
+		if otlpRecv != nil {
+			otlpRecv.SetLogsEmitter(logsSender.Send)
+			otlpRecv.SetTracesEmitter(tracesSender.Send)
+		}
+		if filelogSrc != nil {
+			filelogSrc.SetLogsEmitter(logsSender.Send)
+		}
+		senders := []signal.Sender{logsSender}
+		if tracesSender != nil {
+			senders = append(senders, tracesSender)
+		}
 		exporter = &exporterWithSignalClose{
 			Exporter: exporter,
-			senders:  []signal.Sender{logsSender, tracesSender},
+			senders:  senders,
 		}
+	}
+	if filelogSrc != nil {
+		checks = append(checks, readinessCheck{"filelog checkpoint", filelogSrc.Healthy})
+		selfobs.RegisterGaugeFunc(
+			"wisp_filelog_active_files",
+			"Current number of regular files matched by filelog include/exclude patterns.",
+			func() float64 { return float64(filelogSrc.ActiveFiles()) },
+		)
 	}
 	p.AddExporter(exporter)
 
@@ -346,6 +413,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 }
 
 const envelopeMetadataReserve = 256 << 10
+const fileLogRequestReserve = 64 << 10
 
 func effectiveLogRequestBytes(cfg config.Config) int {
 	limit := cfg.Exporter.OTLP.MaxLogRequestBytes
@@ -372,6 +440,28 @@ func effectiveLogRequestBytes(cfg config.Config) int {
 		}
 	}
 	return limit
+}
+
+func effectiveFileLogBounds(cfg *config.FileLogSource, requestLimit int) (int, int) {
+	maxLine := cfg.MaxLineBytes
+	if maxLine <= 0 {
+		maxLine = 256 << 10
+	}
+	maxBatch := cfg.MaxBatchBytes
+	if maxBatch <= 0 {
+		maxBatch = 512 << 10
+	}
+	payloadLimit := requestLimit - fileLogRequestReserve
+	if payloadLimit < 1 {
+		payloadLimit = 1
+	}
+	if maxBatch > payloadLimit {
+		maxBatch = payloadLimit
+	}
+	if maxLine > maxBatch {
+		maxLine = maxBatch
+	}
+	return maxLine, maxBatch
 }
 
 type exporterWithSignalClose struct {
@@ -463,6 +553,9 @@ func restartRequiredChanges(current, next config.Config) []string {
 	}
 	if !reflect.DeepEqual(current.Sources.OTLP, next.Sources.OTLP) {
 		fields = append(fields, "sources.otlp")
+	}
+	if !reflect.DeepEqual(current.Sources.FileLog, next.Sources.FileLog) {
+		fields = append(fields, "sources.filelog")
 	}
 	if !reflect.DeepEqual(current.Sources.EBPF, next.Sources.EBPF) {
 		fields = append(fields, "sources.ebpf")
