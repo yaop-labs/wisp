@@ -32,11 +32,8 @@ Traces paths:
 - Reef TLS, mTLS, and bearer authentication on ingress and egress;
 - Gyre lifecycle, readiness, status, and generation-aware reload.
 
-Stateful trace tail sampling and the actual eBPF backend remain planned, not
-silently simulated.
-See [the roadmap](docs/ROADMAP.md) and
-[the Linux host metric contract](docs/host-metrics.md), plus
-[the signal extensibility ADR](docs/adr/0001-signal-extensible-core.md).
+The configured eBPF source currently performs capability detection only and
+does not emit telemetry.
 
 ## Build and test
 

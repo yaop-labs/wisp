@@ -1,5 +1,5 @@
 # wisp config example. The binary refuses to start without --config.
-# Metric contract (OTLP): wisp → coral → amber. Design docs live in the private vault.
+# OTLP metrics flow from Wisp to Coral and Amber.
 
 agent:
   log_level: info
@@ -197,5 +197,5 @@ exporter:
 
 resource:
   attributes:
-    service.name: "wisp" # required by the contract
-    # host.name, k8s.* are auto-detected / injected in later phases
+    service.name: "wisp" # required
+    # host.name and Kubernetes attributes may be detected by configured sources

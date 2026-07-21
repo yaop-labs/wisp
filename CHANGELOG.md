@@ -155,8 +155,7 @@ No changes yet.
 
 - Gyre operational endpoints and generation-aware runtime reload;
 - build-time version, commit, and date metadata;
-- CI and release automation;
-- architecture decision for a signal-extensible core and future profiles.
+- CI and release automation.
 
 ### Changed
 

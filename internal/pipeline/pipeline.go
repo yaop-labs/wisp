@@ -166,12 +166,12 @@ func (p *Pipeline) Shutdown(ctx context.Context) error {
 		// Export the final drain under the shutdown context, not the run context
 		// SIGTERM already cancelled — otherwise every queued batch fails Export
 		// instantly and is dropped (or loops pointlessly through the spool). Swap
-		// before cancelling runCtx so no drained batch sees a cancelled ctx. (P0-4)
+		// before cancelling runCtx so no drained batch sees a cancelled ctx.
 		p.setExportCtx(ctx)
 		// Cancel the run context and wait for every source goroutine (and the
 		// in-flight scrapes they spawn) to return before closing the queue.
 		// Otherwise a source still inside emit() can send on a closed channel and
-		// panic, aborting shutdown before the spool is flushed. (P0-3)
+		// panic, aborting shutdown before the spool is flushed.
 		if p.runCancel != nil {
 			p.runCancel()
 		}

@@ -22,10 +22,6 @@ import (
 // account, periodically listing pods (one list per scrape cycle). Pods opt in
 // via the prometheus.io/scrape annotation; discovered targets carry
 // __meta_kubernetes_* labels (available to relabel, stripped before export).
-//
-// NOTE: verified against a fake API server in tests; real-cluster e2e is gated
-// (needs a cluster). A watch-based (vs list-per-cycle) refresh is a later
-// improvement.
 
 const (
 	saTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // G101: well-known SA token mount path, not a hardcoded secret
